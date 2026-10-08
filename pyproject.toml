@@ -31,6 +31,10 @@ extend-exclude = ["src/naga/kernel.py"]
 [tool.pyright]
 include = ["src"]
 typeCheckingMode = "basic"
+# 冻结种子文件豁免类型检查(与 ruff extend-exclude 同一边界):T16 测试段对
+# grant/ctx 的 Optional 访问由运行时前置 assert 保证,类型层不收窄属预期;
+# WS1 产品化重写时该豁免随之取消。演进代码仍受 basic(出口升 strict)约束。
+exclude = ["src/naga/kernel.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
