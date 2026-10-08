@@ -20,6 +20,7 @@ LAYOUT_DIRS = (
     "traces",
     "shadow",
     "credentials",
+    "keys",
     "keys/escrow",
 )
 
