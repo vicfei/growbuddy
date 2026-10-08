@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "naga"
+version = "0.1.0"
+description = "Samsara L0 kernel - Python route (Naga)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "pyright>=1.1.380",
+  "pyyaml>=6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
