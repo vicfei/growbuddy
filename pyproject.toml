@@ -7,7 +7,9 @@ name = "naga"
 version = "0.1.0"
 description = "Samsara L0 kernel - Python route (Naga)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "zstandard>=0.22",  # 快照 tar.zst(数据模型 §3.2);首个运行时依赖
+]
 
 [project.optional-dependencies]
 dev = [
