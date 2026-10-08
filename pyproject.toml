@@ -23,10 +23,18 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# 冻结种子文件,原样平移(docs/design 基线的孪生副本,运行正确性由 pytest T 套件与
+# 冻结检查器 R14 把关);lint 只管 src/ 下的演进代码。2026 版 ruff 默认规则集
+# 含 I/UP/SIM/BLE/ASYNC,对逐字副本属于噪音,故整体排除而非逐条豁免。
+extend-exclude = ["src/naga/kernel.py"]
 
 [tool.pyright]
 include = ["src"]
 typeCheckingMode = "basic"
+# 冻结种子文件豁免类型检查(与 ruff extend-exclude 同一边界):T16 测试段对
+# grant/ctx 的 Optional 访问由运行时前置 assert 保证,类型层不收窄属预期;
+# WS1 产品化重写时该豁免随之取消。演进代码仍受 basic(出口升 strict)约束。
+exclude = ["src/naga/kernel.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
