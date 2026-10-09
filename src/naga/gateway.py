@@ -193,6 +193,13 @@ class Gateway:
             task = await queue.get()
             try:
                 await self._run_task(task)
+            except Exception as err:  # noqa: BLE001 —— 车道逐任务隔离:坏任务不得杀死消费者
+                await self._broadcast("agent.failed", {
+                    "session_key": task.get("session_key"),
+                    "trace_id": task.get("trace_id"),
+                    "reply": None, "outcome": "failed",
+                    "tokens": 0,
+                    "failure_analysis": f"{type(err).__name__}: {err}"})
             finally:
                 queue.task_done()
 

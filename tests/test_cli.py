@@ -26,8 +26,12 @@ def test_daemon_lifecycle_and_idempotency(tmp_path):
     with open(os.path.join(home, "credentials", "providers.json"), "w") as fh:
         json.dump({"deepseek": {"base_url": "http://127.0.0.1:9", "api_key": "sk-dummy",
                                 "chat_model": "dummy"}}, fh)
-    r = _cli(home, "--json", "daemon", "start")
-    assert r.returncode == 0, r.stderr
+    os.environ["NAGA_WS_PORT"] = "0"  # 临时端口:测试不与真实 daemon(18789)冲突
+    try:
+        r = _cli(home, "--json", "daemon", "start")
+        assert r.returncode == 0, r.stderr
+    finally:
+        os.environ.pop("NAGA_WS_PORT", None)
     assert json.loads(r.stdout)["daemon"] == "started"
 
     r = _cli(home, "--json", "daemon", "start")  # 幂等

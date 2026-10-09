@@ -29,13 +29,18 @@ PRIVATE_DIRS = frozenset({"credentials", "keys", "keys/escrow"})
 
 
 def resolve_home(explicit: str | None = None) -> str:
-    """home 解析优先级:显式参数 > SAMSARA_HOME 环境变量 > ~/.samsara。"""
+    """home 解析优先级:显式参数 > NAGA_HOME > SAMSARA_HOME(兼容别名)> ~/.naga。
+
+    与代号对齐:TS 路线 Samsara 用 ~/.samsara,Python 路线 Naga 用 ~/.naga
+    (数据模型 §2 只定义了 ~/.samsara——规格缺口见 issue #30)。
+    """
     if explicit:
         return explicit
-    env = os.environ.get("SAMSARA_HOME")
-    if env:
-        return env
-    return os.path.join(os.path.expanduser("~"), ".samsara")
+    for env in ("NAGA_HOME", "SAMSARA_HOME"):
+        value = os.environ.get(env)
+        if value:
+            return value
+    return os.path.join(os.path.expanduser("~"), ".naga")
 
 
 def init_home(home: str | None = None) -> str:

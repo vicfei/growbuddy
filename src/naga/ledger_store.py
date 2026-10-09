@@ -356,6 +356,14 @@ class DurableLedger:
         elif k == "skill.quarantine" and "cas_id" in p:
             self._db.execute("UPDATE skill_nodes SET status='quarantined' WHERE cas_id=?",
                              (p["cas_id"],))
+        elif k == "skill.use" and "cas_id" in p:
+            row = self._db.execute("SELECT metrics_json FROM skill_nodes WHERE cas_id=?",
+                                   (p["cas_id"],)).fetchone()
+            metrics: dict[str, Any] = json.loads(row[0]) if row and row[0] else {}
+            metrics["uses"] = int(metrics.get("uses", 0)) + 1
+            metrics["lastUsed"] = _iso(entry["ts"])  # 以条目 ts 为准——重放确定性
+            self._db.execute("UPDATE skill_nodes SET metrics_json=? WHERE cas_id=?",
+                             (_canonical(metrics), p["cas_id"]))
         elif k == "trace.record":
             cost: dict[str, Any] = p.get("cost") or {}
             self._db.execute(

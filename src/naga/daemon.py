@@ -42,7 +42,8 @@ async def amain(home: str) -> int:
         from naga.tools import WebSearchTool
         tools.append(WebSearchTool(creds))
     gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools)
-    port = await gateway.start("127.0.0.1", WS_PORT)
+    port = int(os.environ.get("NAGA_WS_PORT", str(WS_PORT)))  # 0 = 临时端口(测试/并行)
+    port = await gateway.start("127.0.0.1", port)
     await asyncio.to_thread(_write_marker, ready, f"{os.getpid()} {port}")
 
     stop = asyncio.Event()

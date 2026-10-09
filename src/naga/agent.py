@@ -21,8 +21,10 @@ from pydantic import BaseModel
 from naga import kernel
 from naga.ledger_store import DurableLedger
 from naga.llm import ModelAdapter, ToolSpec, price_cents
-from naga.skills import SkillStore
+from naga.skills import SKILL_MAX_BYTES, SkillStore
 from naga.trace import TraceRecorder
+
+SKILL_DISTILL_MIN_TOOL_CALLS = 5  # spec-constants skill_distill_min_tool_calls / H.4
 
 
 class AgentResult(BaseModel):
@@ -59,7 +61,7 @@ class AgentLoop:
         self._trace_id = trace_id
         self._step_seq = 0
 
-    # ---- 技能检索(初版:拉丁词 + CJK 二元组;M2 换 embedding+rerank) ----
+    # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
     @staticmethod
     def _keywords(goal: str) -> list[str]:
         words = [w for w in re.split(r"[^\w]+", goal) if len(w) >= 2]
@@ -70,18 +72,26 @@ class AgentLoop:
         if self._skills is None:
             return []
         keywords = self._keywords(goal)
-        scored: list[tuple[int, str]] = []
-        for _, name, _, _, _ in self._skills.list():
-            got = self._skills.get(name)
-            if got is None:
-                continue
-            meta, content = got
-            text = (name + " " + content).lower()
-            score = sum(1 for k in keywords if k.lower() in text)
-            if score > 0:
-                scored.append((score, f"skill://{name}@v{meta.version}"))
+        scored: list[tuple[int, str, str]] = []  # (score, uri, cas_id)
+        seen: set[str] = set()
+        for branch in (f"local:{self._session_key}", "main"):
+            for cas, name, _, _, _ in self._skills.list(branch=branch):
+                if name in seen:
+                    continue
+                got = self._skills.get(name, branch=branch)
+                if got is None:
+                    continue
+                meta, content = got
+                text = (name + " " + content).lower()
+                score = sum(1 for k in keywords if k.lower() in text)
+                if score > 0:
+                    scored.append((score, f"skill://{name}@v{meta.version}", cas))
+                    seen.add(name)
         scored.sort(key=lambda p: (-p[0], p[1]))
-        return [uri for _, uri in scored[:limit]]
+        picked = scored[:limit]
+        for _, _, cas in picked:  # 命中即计量(uses/lastUsed,投影确定性更新)
+            self._ledger.append("skill.use", "root", {"cas_id": cas})
+        return [uri for _, uri, _ in picked]
 
     def _system_prompt(self, skills: list[str]) -> str:
         lines = [
@@ -119,12 +129,15 @@ class AgentLoop:
         ]
         tool_specs = [ToolSpec(name=t.name, description=t.description,
                                parameters=t.parameters) for t in self._tools.values()]
+        trace_id = self._trace_id or ("tr_" + uuid.uuid4().hex[:24])
         rec = TraceRecorder(self._ledger,
-                            trace_id=self._trace_id or ("tr_" + uuid.uuid4().hex[:24]),
+                            trace_id=trace_id,
                             session_key=self._session_key, inbound={"text": goal},
                             skills_loaded=skills,
                             env={"model": self._model_id, "channel": "gateway" if self._session_key != "cli:local:owner" else "cli"})
         self._step_seq = 0
+        self._tool_steps = 0
+        self._tool_log: list[dict[str, Any]] = []
         tokens = 0
         cost = 0
         aborted: str | None = None
@@ -143,21 +156,34 @@ class AgentLoop:
                          results={"content": resp.content,
                                   "tool_calls": [tc["name"] for tc in resp.tool_calls]})
                 if resp.tool_calls:
+                    # 回填必须用 OpenAI 完整格式(id/type/function 嵌套)——简化 dict 会被 422 拒
                     messages.append({"role": "assistant", "content": resp.content or "",
-                                     "tool_calls": resp.tool_calls})
+                                     "tool_calls": [
+                                         {"id": tc["id"], "type": "function",
+                                          "function": {"name": tc["name"],
+                                                       "arguments": tc["arguments"]}}
+                                         for tc in resp.tool_calls]})
                     for tc in resp.tool_calls:
+                        args = json.loads(tc.get("arguments") or "{}")
                         result, ok, tool_ms = await self._call_tool(tc)
+                        self._tool_steps += 1
+                        self._tool_log.append({"tool": str(tc["name"]), "args": args})
                         self._step_seq += 1
                         rec.step(self._step_seq, "tool", str(tc["name"]), ok, tool_ms, 0,
-                                 args=json.loads(tc.get("arguments") or "{}"),
-                                 results=result)
+                                 args=args, results=result)
                         messages.append({"role": "tool", "tool_call_id": tc["id"],
                                          "content": json.dumps(result, ensure_ascii=False,
                                                                 default=str)})
                     continue
                 messages.append({"role": "assistant", "content": resp.content or ""})
+                reply = resp.content or ""
+                # 沉淀判定(H.4:≥5 工具调用才值得记;§6.4 默认局部——local:{session} 分支)
+                if self._skills is not None and self._tool_steps >= SKILL_DISTILL_MIN_TOOL_CALLS:
+                    sed = await self._sediment(goal, reply, rec, trace_id)
+                    tokens += sed["tokens"]
+                    cost += sed["cost_cents"]
                 trace = rec.finish(outcome="success", cost_tokens=tokens, cost_cents=cost)
-                return AgentResult(reply=resp.content, outcome="success",
+                return AgentResult(reply=reply, outcome="success",
                                    trace_id=str(trace["trace_id"]), steps=self._step_seq,
                                    tokens=tokens, cost_cents=cost)
             aborted = "步数上限"
@@ -168,3 +194,57 @@ class AgentLoop:
         return AgentResult(reply=None, outcome="aborted",
                            trace_id=str(trace["trace_id"]), steps=self._step_seq,
                            tokens=tokens, cost_cents=cost, failure_analysis=aborted)
+
+    # ---- 技能沉淀(④ 类蒸馏调用,H.1;§6.4 默认局部) ----
+    @staticmethod
+    def _slug(text: str, fallback: str) -> str:
+        s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40]
+        return s or fallback
+
+    async def _sediment(self, goal: str, reply: str, rec: TraceRecorder,
+                        trace_id: str) -> dict[str, int]:
+        """蒸馏任务经验为 SKILL.md,提交 local:{session} 分支;返回计量。"""
+        t0 = time.monotonic()
+        prompt = (
+            "根据以下任务执行记录,为\"下次同类任务直接复用\"沉淀一份技能文档。\n"
+            "第一行输出技能 ID(格式:id: <短横线小写英文>),随后是 Markdown 正文,"
+            "必须包含三个二级标题节:## 何时使用、## 步骤、## 已知陷阱。\n\n"
+            f"任务:{goal}\n"
+            f"执行记录:{json.dumps(self._tool_log, ensure_ascii=False, default=str)}\n"
+            f"最终结果:{reply}")
+        try:
+            resp = await self._adapter.chat([{"role": "user", "content": prompt}],
+                                            None, max_tokens=2048)
+        except kernel.QuotaExhausted:
+            self._step_seq += 1
+            rec.step(self._step_seq, "llm", "skill-distill", False,
+                     int((time.monotonic() - t0) * 1000), 0,
+                     args={"goal": goal}, results={"error": "预算耗尽,跳过沉淀"})
+            return {"tokens": 0, "cost_cents": 0}
+        usage = resp.prompt_tokens + resp.completion_tokens
+        try:
+            self._budget.consume(usage)
+        except kernel.QuotaExhausted:
+            return {"tokens": 0, "cost_cents": 0}
+        body = (resp.content or "").strip()
+        m = re.match(r"^id:\s*([a-z0-9][a-z0-9-]*)\s*\n", body)
+        skill_id = m.group(1) if m else self._slug(goal, f"skill-{trace_id[-6:]}")
+        if m:
+            body = body[m.end():]
+        content = f"---\nname: {skill_id}\n---\n{body}\n"
+        data = content.encode("utf-8")
+        if len(data) > SKILL_MAX_BYTES:  # 按字节截断(CJK 多字节;15KB 硬限在 commit 兜底)
+            content = data[:SKILL_MAX_BYTES - 1].decode("utf-8", errors="ignore") + "\n"
+        ok = True
+        try:
+            assert self._skills is not None
+            self._skills.commit(skill_id, content,
+                                provenance={"source": "agent", "trace_id": trace_id},
+                                branch=f"local:{self._session_key}")
+        except (ValueError, AssertionError):
+            ok = False
+        self._step_seq += 1
+        rec.step(self._step_seq, "llm", "skill-distill", ok,
+                 int((time.monotonic() - t0) * 1000), usage,
+                 args={"goal": goal}, results={"skill": skill_id if ok else None})
+        return {"tokens": usage, "cost_cents": price_cents(self._model_id, usage, 0)}
