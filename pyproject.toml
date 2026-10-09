@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Samsara L0 kernel - Python route (Naga)"
 requires-python = ">=3.11"
 dependencies = [
-  "zstandard>=0.22",  # 快照 tar.zst(数据模型 §3.2);首个运行时依赖
+  "zstandard>=0.23",  # 快照 tar.zst(数据模型 §3.2);>=0.23 含类型标注
+  "pydantic>=2.5",    # 协议边界模型(Naga 纪律③;磁盘行 LedgerLine)
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,9 @@ dev = [
   "pyright>=1.1.380",
   "pyyaml>=6",
 ]
+
+[project.scripts]
+naga = "naga.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -33,10 +37,10 @@ extend-exclude = ["src/naga/kernel.py"]
 
 [tool.pyright]
 include = ["src"]
-typeCheckingMode = "basic"
-# 冻结种子文件豁免类型检查(与 ruff extend-exclude 同一边界):T16 测试段对
+typeCheckingMode = "strict"
+# 冻结种子文件豁免(与 ruff extend-exclude 同边界):T16 测试段对
 # grant/ctx 的 Optional 访问由运行时前置 assert 保证,类型层不收窄属预期;
-# WS1 产品化重写时该豁免随之取消。演进代码仍受 basic(出口升 strict)约束。
+# 重写属后续内核产品化批次,届时该豁免取消。演进代码全部受 strict 约束。
 exclude = ["src/naga/kernel.py"]
 
 [tool.pytest.ini_options]

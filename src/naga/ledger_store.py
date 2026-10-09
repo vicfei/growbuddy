@@ -21,9 +21,10 @@ import re
 import sqlite3
 import tarfile
 import time
-from typing import Any
+from typing import Any, TextIO
 
 import zstandard
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from naga import storage
 
@@ -60,6 +61,37 @@ CREATE TABLE IF NOT EXISTS effects (
 """
 
 _SNAP_RE = re.compile(r"^snapshot_(\d+)\.tar\.zst$")
+
+
+class LedgerLine(BaseModel):
+    """磁盘行 schema(协议边界:head.log / segments 的一行,Naga 纪律③)。
+
+    小 payload 内联(payload 字段),大 payload 外置(payload_cas + payload_hash);
+    extra=forbid——未知字段在边界处拒绝而非静默透传。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    ts: float
+    kind: str
+    owner: str
+    payload: dict[str, Any] | None = None
+    payload_hash: str
+    payload_cas: str | None = None
+    prev_hash: str
+    hash: str
+
+
+class SidecarPointer(BaseModel):
+    """K.7 旁路指针对象(blobs 中代替本体的内容)。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    sidecar: bool = False
+    path: str
+    size: int
+    sha256: str
 
 
 def _canonical(obj: Any) -> str:
@@ -111,12 +143,12 @@ class CAS:
         hexd = cas_id.removeprefix("sha256:")
         data = _read(self._blob_path(hexd))
         try:
-            pointer = json.loads(data)
-        except (ValueError, UnicodeDecodeError):
-            return data
-        if isinstance(pointer, dict) and pointer.get("sidecar"):
-            raw = _read(os.path.join(self._home, pointer["path"]))
-            if hashlib.sha256(raw).hexdigest() != pointer["sha256"]:
+            pointer = SidecarPointer.model_validate_json(data)
+        except ValidationError:
+            return data  # 普通对象:本体即内容
+        if pointer.sidecar:
+            raw = _read(os.path.join(self._home, pointer.path))
+            if hashlib.sha256(raw).hexdigest() != pointer.sha256:
                 raise ValueError(f"sidecar hash mismatch: {cas_id}")
             return raw
         return data
@@ -162,19 +194,19 @@ class DurableLedger:
         self._segment_max = segment_max
         self._snapshot_every = snapshot_every
         self.cas = CAS(self.home, sidecar_min)
-        self._entries: list[dict] = []
+        self._entries: list[dict[str, Any]] = []
         self._head_count = 0
         self._snapshot_seq = 0
         self.last_recovery: dict[str, int] = {}
         # append-only 日志句柄随实例存续,close() 统一回收
-        self._fh = open(self._head_path, "a", encoding="utf-8")  # noqa: SIM115
-        self._db = sqlite3.connect(self._db_path)
+        self._fh: TextIO = open(self._head_path, "a", encoding="utf-8")  # noqa: SIM115
+        self._db: sqlite3.Connection = sqlite3.connect(self._db_path)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
     # ---- 写路径 ----
-    def append(self, kind: str, owner: str, payload: dict) -> dict:
+    def append(self, kind: str, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
         entry = {
             "seq": len(self._entries) + 1,
             "ts": time.time(),
@@ -211,7 +243,7 @@ class DurableLedger:
 
     # ---- 读路径 ----
     @property
-    def entries(self) -> list[dict]:
+    def entries(self) -> list[dict[str, Any]]:
         return list(self._entries)
 
     def verify(self) -> bool:
@@ -260,7 +292,7 @@ class DurableLedger:
         return seq
 
     # ---- 投影 ----
-    def _project(self, entry: dict, payload_cas: str | None) -> None:
+    def _project(self, entry: dict[str, Any], payload_cas: str | None) -> None:
         actor = _canonical({"id": entry["owner"]})
         pbytes = _canonical(entry["payload"]).encode()
         self._db.execute(
@@ -343,17 +375,18 @@ class DurableLedger:
                 os.remove(stale)
         return best_seq
 
-    def _load_lines(self) -> tuple[list[tuple[dict, str | None]], int, int]:
+    def _load_lines(self) -> tuple[list[tuple[dict[str, Any], str | None]], int, int]:
         """读 segments + head.log,重放校验;返回 (条目, cas) 对、断写数、head 行数。
 
         断写容忍仅限 head.log 尾行(无换行即截断);分段为封存态,损坏属硬失败,
-        由链校验(seq 连续/prev 链/条目哈希)以 ValueError 抛出。
+        由链校验(seq 连续/prev 链/条目哈希)以 ValueError 抛出。逐行过
+        LedgerLine 模型(磁盘→内存即协议边界,Naga 纪律③)。
         """
         seg_files = sorted(
             os.path.join(self._segments_dir, n)
             for n in os.listdir(self._segments_dir) if n.endswith(".log"))
         files = [*seg_files, self._head_path]
-        pairs: list[tuple[dict, str | None]] = []
+        pairs: list[tuple[dict[str, Any], str | None]] = []
         truncated = 0
         head_lines = 0
         for i, path in enumerate(files):
@@ -367,12 +400,14 @@ class DurableLedger:
             if is_head:
                 head_lines = len(lines)
             for ln in lines:
-                line = json.loads(ln)
+                line: dict[str, Any] = LedgerLine.model_validate_json(ln).model_dump()
                 entry = {k: line[k] for k in ("seq", "ts", "kind", "owner", "prev_hash", "hash")}
-                if "payload" in line:
+                if line["payload"] is not None:
                     entry["payload"] = line["payload"]
                     cas: str | None = None
                 else:
+                    if line["payload_cas"] is None:
+                        raise ValueError(f"line without payload or payload_cas at seq {line['seq']}")
                     raw = self.cas.get(line["payload_cas"])
                     entry["payload"] = json.loads(raw)
                     if hashlib.sha256(_canonical(entry["payload"]).encode()).hexdigest() \
