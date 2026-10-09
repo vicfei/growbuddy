@@ -48,7 +48,8 @@ class AgentLoop:
                  budget: kernel.Budget, adapter: ModelAdapter,
                  tools: list[Any] | None = None, skill_store: SkillStore | None = None,
                  session_key: str = "cli:local:owner", model_id: str = "deepseek-v4-flash",
-                 max_steps: int = 8, trace_id: str | None = None):
+                 max_steps: int = 8, trace_id: str | None = None,
+                 actor_trust: str | None = None):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
@@ -59,6 +60,7 @@ class AgentLoop:
         self._model_id = model_id
         self._max_steps = max_steps
         self._trace_id = trace_id
+        self._actor_trust = actor_trust
         self._step_seq = 0
 
     # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
@@ -134,7 +136,9 @@ class AgentLoop:
                             trace_id=trace_id,
                             session_key=self._session_key, inbound={"text": goal},
                             skills_loaded=skills,
-                            env={"model": self._model_id, "channel": "gateway" if self._session_key != "cli:local:owner" else "cli"})
+                            env={"model": self._model_id,
+                                 "channel": self._session_key.split(":", 1)[0],
+                                 "actor_trust": self._actor_trust})
         self._step_seq = 0
         self._tool_steps = 0
         self._tool_log: list[dict[str, Any]] = []
