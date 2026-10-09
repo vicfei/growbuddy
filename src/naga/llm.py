@@ -15,10 +15,14 @@ from typing import Any, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from naga import storage
+
 TOOL_DESC_MAX_CHARS = 500  # spec-constants tool_desc_max_chars / 接口 §5.4(防投毒)
 
-DEFAULT_CREDENTIALS_PATH = os.path.join(
-    os.path.expanduser("~"), ".samsara", "credentials", "providers.json")
+
+def default_credentials_path() -> str:
+    """凭据仓路径跟随 home 解析(数据模型 §2:credentials 在 home 下)。"""
+    return os.path.join(storage.resolve_home(), "credentials", "providers.json")
 
 
 class ProviderConfig(BaseModel):
@@ -31,8 +35,8 @@ class ProviderConfig(BaseModel):
 class CredentialStore:
     """厂商凭据仓的只读入口(密钥不出 0600 文件)。"""
 
-    def __init__(self, path: str = DEFAULT_CREDENTIALS_PATH):
-        self._path = path
+    def __init__(self, path: str | None = None):
+        self._path = path or default_credentials_path()
 
     def provider(self, name: str) -> ProviderConfig:
         with open(self._path, encoding="utf-8") as fh:
