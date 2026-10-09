@@ -22,9 +22,13 @@ def test_private_dirs_are_0700(tmp_path):
 
 def test_home_priority(tmp_path, monkeypatch):
     explicit = str(tmp_path / "explicit")
-    env_home = str(tmp_path / "envhome")
-    monkeypatch.setenv("SAMSARA_HOME", env_home)
+    naga_home = str(tmp_path / "nagahome")
+    samsara_home = str(tmp_path / "samsarahome")
+    monkeypatch.setenv("NAGA_HOME", naga_home)
+    monkeypatch.setenv("SAMSARA_HOME", samsara_home)
     assert resolve_home(explicit) == explicit
-    assert resolve_home() == env_home
+    assert resolve_home() == naga_home          # NAGA_HOME 优先
+    monkeypatch.delenv("NAGA_HOME")
+    assert resolve_home() == samsara_home       # SAMSARA_HOME 兼容别名
     monkeypatch.delenv("SAMSARA_HOME")
-    assert resolve_home().endswith(".samsara")
+    assert resolve_home().endswith(".naga")     # 默认与代号对齐(issue #30)

@@ -165,6 +165,53 @@ def test_param_missing_error_frame(tmp_path):
     asyncio.run(scenario())
 
 
+def test_failed_task_does_not_kill_lane_consumer(tmp_path):
+    """车道隔离回归:任务内未捕获异常必须转为 agent.failed 事件,消费者存活。"""
+
+    class BoomThenOk:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, tools=None, *, max_tokens=1024):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("adapter exploded")
+            return ChatResponse(content="recovered", prompt_tokens=1, completion_tokens=1)
+
+    async def scenario():
+        adapter = BoomThenOk()
+        led = DurableLedger(str(tmp_path / "home"))
+        gw = Gateway(led, make_adapter=lambda: adapter)
+        port = await gw.start("127.0.0.1", 0)
+        try:
+            async with aiohttp.ClientSession() as s, \
+                    s.ws_connect(f"ws://127.0.0.1:{port}/gw") as ws:
+                await ws.send_json(_HELLO)
+                await ws.receive()
+
+                async def submit(rid, ik):
+                    await ws.send_json(_req(rid, f"goal-{rid}", ik=ik))
+                    while True:
+                        frame = json.loads((await ws.receive(timeout=30)).data)
+                        if frame.get("type") == "res" and frame.get("id") == rid:
+                            continue
+                        if frame.get("type") == "event" and frame["event"] in (
+                                "agent.completed", "agent.failed"):
+                            return frame
+
+                first = await submit("r1", "ik_boom")      # 同一 session,同一 lane
+                assert first["event"] == "agent.failed"
+                assert "adapter exploded" in first["payload"]["failure_analysis"]
+                second = await submit("r2", "ik_recover")  # 消费者必须还活着
+                assert second["event"] == "agent.completed"
+                assert second["payload"]["reply"] == "recovered"
+        finally:
+            await gw.stop()
+            led.close()
+
+    asyncio.run(scenario())
+
+
 def test_frame_over_limit_drops_connection(tmp_path):
     async def scenario():
         async with _server(str(tmp_path / "home")) as (_, _, port), _client(port) as ws:
