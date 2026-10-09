@@ -6,10 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "naga"
 version = "0.1.0"
 description = "Samsara L0 kernel - Python route (Naga)"
-requires-python = ">=3.11"
+requires-python = ">=3.12"  # type 语句(递归类型别名)依赖 3.12;本机与 CI 均为 3.12
 dependencies = [
   "zstandard>=0.23",  # 快照 tar.zst(数据模型 §3.2);>=0.23 含类型标注
   "pydantic>=2.5",    # 协议边界模型(Naga 纪律③;磁盘行 LedgerLine)
+  "pyyaml>=6",        # SKILL.md frontmatter(主文档 §6.1)
 ]
 
 [project.optional-dependencies]
