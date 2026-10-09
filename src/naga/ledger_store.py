@@ -58,6 +58,30 @@ CREATE TABLE IF NOT EXISTS effects (
   compensable INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('applied','reverted','compensated','failed'))
 );
+CREATE TABLE IF NOT EXISTS skill_nodes (
+  cas_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  parent_cas TEXT,
+  branch TEXT NOT NULL DEFAULT 'main',
+  status TEXT NOT NULL CHECK (status IN ('active','stale','archived','quarantined')),
+  provenance TEXT NOT NULL,
+  metrics_json TEXT,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes <= 15360)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_lookup ON skill_nodes(name, branch, status);
+CREATE TABLE IF NOT EXISTS traces (      -- M1 SQLite 镜像(Parquet 主存随 M2/M4,见 issue #23)
+  trace_id TEXT PRIMARY KEY,
+  session_key TEXT NOT NULL,
+  agent_id TEXT,
+  outcome TEXT NOT NULL,
+  failure_analysis TEXT,
+  cost_cents INTEGER NOT NULL DEFAULT 0,
+  tokens INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  task_cluster TEXT,
+  replay_bundle_cas TEXT
+);
 """
 
 _SNAP_RE = re.compile(r"^snapshot_(\d+)\.tar\.zst$")
@@ -313,6 +337,26 @@ class DurableLedger:
         elif k == "effect.revert" and "ref_seq" in p:
             self._db.execute("UPDATE effects SET status=?, revert_seq=? WHERE apply_seq=?",
                              (p.get("status", "reverted"), entry["seq"], p["ref_seq"]))
+        elif k == "skill.commit":
+            self._db.execute(
+                "INSERT OR REPLACE INTO skill_nodes VALUES (?,?,?,?,?,?,?,?,?)",
+                (p["cas_id"], p["name"], p["version"], p.get("parent_cas"),
+                 p.get("branch", "main"), p.get("status", "active"),
+                 p["provenance"] if isinstance(p["provenance"], str)
+                 else _canonical(p["provenance"]),
+                 p.get("metrics_json") or _canonical(p.get("metrics") or {"uses": 0}),
+                 p["size_bytes"]))
+        elif k == "skill.quarantine" and "cas_id" in p:
+            self._db.execute("UPDATE skill_nodes SET status='quarantined' WHERE cas_id=?",
+                             (p["cas_id"],))
+        elif k == "trace.record":
+            cost: dict[str, Any] = p.get("cost") or {}
+            self._db.execute(
+                "INSERT OR REPLACE INTO traces VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (p["trace_id"], p["session_key"], p.get("agent_id"), p["outcome"],
+                 p.get("failure_analysis"), int(cost.get("usd_cents", 0)),
+                 int(cost.get("tokens", 0)), int(p.get("duration_ms", 0)),
+                 p.get("task_cluster"), p.get("replay_bundle_cas")))
         self._db.commit()
 
     # ---- 恢复 ----
@@ -432,3 +476,8 @@ class DurableLedger:
         self._db.commit()
         self._db.close()
         self._fh.close()
+
+    def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        """投影只读查询(SQLite 镜像;真相在账本,此为便捷入口)。"""
+        cur = self._db.execute(sql, params)
+        return cur.fetchall()
