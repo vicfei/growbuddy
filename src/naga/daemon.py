@@ -35,7 +35,7 @@ async def amain(home: str) -> int:
     led = DurableLedger.open(home)
     _write_marker(pidfile, str(os.getpid()))
 
-    creds = CredentialStore()
+    creds = CredentialStore(os.path.join(home, "credentials", "providers.json"))
     adapter = DeepSeekAdapter.from_credentials(creds)
     tools: list[Any] = []
     if creds.has("bocha"):

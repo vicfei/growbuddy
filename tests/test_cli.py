@@ -21,6 +21,11 @@ def _cli(home: str, *argv: str) -> subprocess.CompletedProcess[str]:
 
 def test_daemon_lifecycle_and_idempotency(tmp_path):
     home = str(tmp_path / "home")
+    # daemon 启动需要凭据仓(按 home 解析);注入 dummy 条目,lifecycle 不触达真实 API
+    os.makedirs(os.path.join(home, "credentials"), exist_ok=True)
+    with open(os.path.join(home, "credentials", "providers.json"), "w") as fh:
+        json.dump({"deepseek": {"base_url": "http://127.0.0.1:9", "api_key": "sk-dummy",
+                                "chat_model": "dummy"}}, fh)
     r = _cli(home, "--json", "daemon", "start")
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["daemon"] == "started"

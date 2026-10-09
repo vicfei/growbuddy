@@ -143,7 +143,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     from naga.tools import WebSearchTool
 
     async def scenario() -> AgentResult:
-        creds = CredentialStore()
+        creds = CredentialStore(os.path.join(home, "credentials", "providers.json"))
         adapter = DeepSeekAdapter.from_credentials(creds)
         tools: list[Any] = []
         if creds.has("bocha"):
