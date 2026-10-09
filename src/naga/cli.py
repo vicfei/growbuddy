@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import signal
@@ -132,6 +133,42 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    from typing import cast
+
+    from naga import kernel
+    from naga.agent import AgentLoop, AgentResult
+    from naga.llm import CredentialStore, DeepSeekAdapter
+    from naga.skills import SkillStore
+    from naga.tools import WebSearchTool
+
+    async def scenario() -> AgentResult:
+        creds = CredentialStore()
+        adapter = DeepSeekAdapter.from_credentials(creds)
+        tools: list[Any] = []
+        if creds.has("bocha"):
+            tools.append(WebSearchTool(creds))
+        led = DurableLedger.open(home)
+        kern = kernel.Kernel(ledger=cast("kernel.Ledger", led))  # 鸭子类型:append/verify/close
+        agent = AgentLoop(ledger=led, ctx=kern.root,
+                          budget=kernel.Budget(args.budget), adapter=adapter,
+                          tools=tools, skill_store=SkillStore(led),
+                          max_steps=args.max_steps)
+        try:
+            return await agent.run(args.goal)
+        finally:
+            led.close()
+
+    home = storage.init_home(args.home)
+    result = asyncio.run(scenario())
+    if args.json:
+        print(result.model_dump_json())
+    else:
+        print(result.reply if result.reply else f"[{result.outcome}] {result.failure_analysis}")
+        print(f"trace: {result.trace_id}  steps: {result.steps}  tokens: {result.tokens}")
+    return 0 if result.outcome == "success" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="naga", description="Naga(Samsara Python 路线)CLI")
     parser.add_argument("--home", help="数据根目录(默认 SAMSARA_HOME 或 ~/.samsara)")
@@ -140,9 +177,15 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("daemon", help="守护进程生命周期")
     d.add_argument("action", choices=["start", "stop", "status"])
     sub.add_parser("doctor", help="自检:布局/账本链/快照")
+    r = sub.add_parser("run", help="执行一个任务(L1 任务回路)")
+    r.add_argument("goal", help="任务目标(自然语言)")
+    r.add_argument("--budget", type=int, default=200_000, help="token 预算上限")
+    r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
     args = parser.parse_args(argv)
     if args.cmd == "daemon":
         return cmd_daemon(args)
+    if args.cmd == "run":
+        return cmd_run(args)
     return cmd_doctor(args)
 
 
