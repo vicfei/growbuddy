@@ -11,6 +11,7 @@ dependencies = [
   "zstandard>=0.23",  # 快照 tar.zst(数据模型 §3.2);>=0.23 含类型标注
   "pydantic>=2.5",    # 协议边界模型(Naga 纪律③;磁盘行 LedgerLine)
   "pyyaml>=6",        # SKILL.md frontmatter(主文档 §6.1)
+  "httpx>=0.27",      # LLM/搜索适配器异步客户端(M1 批次 2)
 ]
 
 [project.optional-dependencies]
@@ -39,10 +40,8 @@ extend-exclude = ["src/naga/kernel.py"]
 [tool.pyright]
 include = ["src"]
 typeCheckingMode = "strict"
-# 冻结种子文件豁免(与 ruff extend-exclude 同边界):T16 测试段对
-# grant/ctx 的 Optional 访问由运行时前置 assert 保证,类型层不收窄属预期;
-# 重写属后续内核产品化批次,届时该豁免取消。演进代码全部受 strict 约束。
-exclude = ["src/naga/kernel.py"]
+# 种子内核以文件级注释降级为 basic(见 kernel.py 首行):保持被分析状态,
+# 其导出符号对导入方类型可知;重写属后续内核产品化批次,届时删除该注释。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

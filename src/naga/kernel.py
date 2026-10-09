@@ -1,3 +1,4 @@
+# pyright: basic, reportOptionalMemberAccess=false
 """
 Cordis 风格响应式插件内核 v3.4（Samsara L0 种子代码 · Python 路线）
 项目代号：Naga（那伽）——与 TS 实现 Samsara 赛马并行，文档共同上游 §13.1/§13.2
@@ -237,8 +238,9 @@ class Context:
         return self._register(desc, revert, compensable, 'register')
 
     # ---- 形态 2：perform —— 论文原型（可重放）----
-    async def perform(self, desc: str, apply: Callable, revert: Callable,
-                      compensable: int = REVERSIBLE):
+    async def perform(self, desc: str, apply: Callable[[], Any],
+                      revert: Callable[[], Any],
+                      compensable: int = REVERSIBLE) -> Any:  # 返回 apply 的结果;类型标注为 strict 导入方而加
         h = self._register(desc, revert, compensable, 'perform')
         t0 = time.monotonic()
         try:
