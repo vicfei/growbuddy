@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Naga WebChat</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; }
+  #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; height: 60vh;
+         overflow-y: auto; display: flex; flex-direction: column; gap: .5rem; }
+  .you { align-self: flex-end; background: #e7f0ff; padding: .4rem .8rem; border-radius: 10px; }
+  .naga { align-self: flex-start; background: #f0f0f0; padding: .4rem .8rem; border-radius: 10px;
+          white-space: pre-wrap; }
+  .sys { align-self: center; color: #888; font-size: .85rem; }
+  form { display: flex; gap: .5rem; margin-top: .8rem; }
+  input { flex: 1; padding: .5rem; }
+</style>
+</head>
+<body>
+<h3>Naga WebChat <span id="state" style="color:#888;font-size:.8rem">connecting…</span></h3>
+<div id="log"></div>
+<form onsubmit="return send()">
+  <input id="goal" placeholder="给 Naga 一个任务…" autocomplete="off">
+  <button>发送</button>
+</form>
+<script>
+const logEl = document.getElementById("log");
+const stateEl = document.getElementById("state");
+function log(cls, text) {
+  const d = document.createElement("div");
+  d.className = cls;
+  d.textContent = text;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+let nextId = 1;
+const ws = new WebSocket(`ws://${location.host}/gw`);
+ws.onopen = () => ws.send(JSON.stringify({
+  type: "hello", proto: "samsara/1", auth: {token: ""},
+  device: {id: "webchat", platform: "browser"}, role: "client", caps: []}));
+ws.onclose = () => { stateEl.textContent = "disconnected"; log("sys", "连接已断开"); };
+ws.onerror = () => log("sys", "连接错误");
+ws.onmessage = (m) => {
+  const f = JSON.parse(m.data);
+  if (f.type === "hello-ok") {
+    stateEl.textContent = `connected (${f.trust_level})`;
+    log("sys", `已连接:ledger seq ${f.ledger_seq}`);
+  } else if (f.type === "res") {
+    if (f.ok) log("sys", `已受理:${f.result.trace_id} @ ${f.result.lane}`);
+    else log("sys", `错误:${f.error.code} ${f.error.message}`);
+  } else if (f.type === "event" && f.event === "agent.completed") {
+    log("naga", f.payload.reply ?? `(无回复,${f.payload.outcome})`);
+  } else if (f.type === "event" && f.event === "agent.failed") {
+    log("naga", `任务失败:${f.payload.failure_analysis ?? f.payload.outcome}`);
+  }
+};
+function send() {
+  const goal = document.getElementById("goal").value.trim();
+  if (!goal || ws.readyState !== 1) return false;
+  log("you", goal);
+  document.getElementById("goal").value = "";
+  ws.send(JSON.stringify({
+    type: "req", id: "r_" + (nextId++), method: "agent.run",
+    params: {goal: goal, session_key: "webchat:dm:owner", budget: {tokens: 200000}},
+    idempotency_key: "ik_" + crypto.randomUUID()}));
+  return false;
+}
+</script>
+</body>
+</html>

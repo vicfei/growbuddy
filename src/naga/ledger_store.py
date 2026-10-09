@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS traces (      -- M1 SQLite 镜像(Parquet 主存随 M
   task_cluster TEXT,
   replay_bundle_cas TEXT
 );
+CREATE TABLE IF NOT EXISTS idempotency_keys (  -- GAP8:副作用方法去重缓存(24h 级)
+  key TEXT PRIMARY KEY,
+  method TEXT NOT NULL,
+  first_seq INTEGER NOT NULL,
+  result_cas TEXT,
+  created_at TEXT NOT NULL
+);
 """
 
 _SNAP_RE = re.compile(r"^snapshot_(\d+)\.tar\.zst$")
@@ -481,3 +488,8 @@ class DurableLedger:
         """投影只读查询(SQLite 镜像;真相在账本,此为便捷入口)。"""
         cur = self._db.execute(sql, params)
         return cur.fetchall()
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        """缓存类表写入入口(idempotency_keys 等,不经账本;见 issue #27 声明)。"""
+        self._db.execute(sql, params)
+        self._db.commit()

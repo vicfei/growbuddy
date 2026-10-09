@@ -1,24 +1,30 @@
-"""Naga 守护子进程(M0 占位形态)。
+"""Naga 守护进程(M1 批次 3:网关宿主)。
 
-由 `naga daemon start` 拉起(detached):持有 DurableLedger 打开态,
-SIGTERM 干净关闭。M2 起承载 WS 网关与渠道;当前仅证明生命周期与
-账本打开态的持有(单写入者语义的运行时前提)。Unix only(signal.pause 语义)。
+daemon start 拉起(detached):打开 DurableLedger,启动 WS 网关
+(127.0.0.1:18789,/gw + WebChat 静态页),SIGTERM 干净关闭。
+宪法层条款的 M1 实现:仅回环绑定,远程访问走 SSH 隧道(设计文档 §4.4)。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 import sys
-import time
-from types import FrameType
+from typing import Any
 
 from naga import storage
+from naga.gateway import WS_PORT, Gateway
 from naga.ledger_store import DurableLedger
+from naga.llm import CredentialStore, DeepSeekAdapter
 
 
-def main() -> int:
-    home = storage.resolve_home(sys.argv[1] if len(sys.argv) > 1 else None)
+def _write_marker(path: str, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+async def amain(home: str) -> int:
     storage.init_home(home)
     pidfile = os.path.join(home, "daemon.pid")
     ready = os.path.join(home, "daemon.ready")
@@ -26,28 +32,39 @@ def main() -> int:
         if os.path.exists(stale):
             os.remove(stale)
 
-    led = DurableLedger(home)
-    with open(pidfile, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
+    led = DurableLedger.open(home)
+    _write_marker(pidfile, str(os.getpid()))
 
-    stopping = False
+    creds = CredentialStore()
+    adapter = DeepSeekAdapter.from_credentials(creds)
+    tools: list[Any] = []
+    if creds.has("bocha"):
+        from naga.tools import WebSearchTool
+        tools.append(WebSearchTool(creds))
+    gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools)
+    port = await gateway.start("127.0.0.1", WS_PORT)
+    await asyncio.to_thread(_write_marker, ready, f"{os.getpid()} {port}")
 
-    def _on_term(signum: int, frame: FrameType | None) -> None:
-        nonlocal stopping
-        stopping = True
+    stop = asyncio.Event()
 
-    signal.signal(signal.SIGTERM, _on_term)
-    with open(ready, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
+    def _on_term() -> None:
+        stop.set()
 
-    while not stopping:
-        time.sleep(0.2)
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, _on_term)
+    await stop.wait()
 
+    await gateway.stop()
     led.close()
     for marker in (ready, pidfile):
         if os.path.exists(marker):
             os.remove(marker)
     return 0
+
+
+def main() -> int:
+    home = storage.resolve_home(sys.argv[1] if len(sys.argv) > 1 else None)
+    return asyncio.run(amain(home))
 
 
 if __name__ == "__main__":
