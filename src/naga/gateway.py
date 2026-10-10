@@ -42,8 +42,8 @@ _LOOPBACK = {"127.0.0.1", "::1"}
 
 # ── §10.1 信任级策略(单点:run_agent;候选 spec-constants 随 #23 批 RFC)──
 
-GUEST_TASK_TOKEN_BUDGET = 50_000   # spec-constants guest_task_token_budget(§10.1)
-KNOWN_TASK_TOKEN_BUDGET = 500_000  # spec-constants known_task_token_budget(§10.1)
+GUEST_TASK_TOKEN_BUDGET = 50_000   # spec-constants guest_task_token_budget(§10.1,已注册)
+KNOWN_TASK_TOKEN_BUDGET = 500_000  # spec-constants known_task_token_budget(§10.1,已注册)
 
 
 def task_budget(actor_trust: str | None, requested: int) -> int:
@@ -58,29 +58,102 @@ def task_budget(actor_trust: str | None, requested: int) -> int:
     return 0
 
 
+# ── §5.6 cap→R 级映射 + §10.1 R 档封顶(全映射;候选注册随 #23 批 RFC)──
+
+R0 = 0  # 只读感知(fs.read / screen.capture 本地 / web.fetch)
+R1 = 1  # 工作区内写
+R2 = 2  # 工作区外写 / 任意 shell
+R3 = 3  # 外发通信(net.send / channel.broadcast / email.send)
+R4 = 4  # 不可逆破坏;未声明 cap 的默认档(宁严勿宽)
+
+# §10.1 R 级封顶:guest R0 / known R1 / owner 无封顶(以 R4 表达)
+TRUST_R_CEILING: dict[str, int] = {"owner": R4, "known": R1, "guest": R0}
+
+# 旧 side_effect 声明的归一映射(§5.6 表:read=只读感知;write 泛写近似 R2)
+SIDE_EFFECT_TO_R: dict[str, int] = {"read": R0, "write": R2}
+
+
+def tool_risk(tool: Any) -> int:
+    """§5.6 cap→R:显式 risk_level > side_effect 归一 > 未声明默认 R4。"""
+    level = getattr(tool, "risk_level", None)
+    if isinstance(level, int) and R0 <= level <= R4:
+        return level
+    se = getattr(tool, "side_effect", None)
+    if isinstance(se, str):
+        return SIDE_EFFECT_TO_R.get(se, R4)
+    return R4
+
+
 def tools_for_trust(actor_trust: str | None, tools: list[Any]) -> list[Any]:
-    """§10.1 R 级封顶:guest 仅 R0(只读类副作用)。工具须显式声明
-    side_effect="read" 才对 guest 可见——未声明者宁严勿宽一并排除。"""
-    if actor_trust == "guest":
-        return [t for t in tools if getattr(t, "side_effect", None) == "read"]
-    return tools
+    """§10.1 R 级封顶:超出信任档位的工具不可见;未标注=回环 owner;未知级无工具。"""
+    ceiling = TRUST_R_CEILING.get(actor_trust or "owner")
+    if ceiling is None:
+        return []
+    return [t for t in tools if tool_risk(t) <= ceiling]
+
+
+# ── §4.1 事件可见性矩阵(全行表驱动;「矩阵即代码」,测试逐格覆盖)──
+# 决策四态:none 不可见 / own 仅本会话(需 session_key 匹配;他人会话=none)
+# / summary 状态变更摘要(内容裁剪)/ full 全文。
+_EVENT_CLASS_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("session.", "session"), ("agent.", "session"),
+    ("skill.", "asset"), ("promotion.", "asset"), ("memory.", "asset"),
+    ("job.", "ops"), ("shadow.", "ops"), ("health.", "ops"),
+    ("rollback.", "governance"), ("trust.", "governance"),
+    ("constitution.", "governance"),
+    ("node.", "node"),
+)
+
+_VISIBILITY: dict[str, dict[str, str]] = {
+    # 事件类        untrusted  guest     known     owner  node(仅自身相关)
+    "session":     {"untrusted": "none", "guest": "own",     "known": "own",
+                    "owner": "full", "node": "none"},
+    "asset":       {"untrusted": "none", "guest": "summary", "known": "full",
+                    "owner": "full", "node": "none"},
+    "ops":         {"untrusted": "none", "guest": "none",    "known": "full",
+                    "owner": "full", "node": "none"},
+    "governance":  {"untrusted": "none", "guest": "none",    "known": "summary",
+                    "owner": "full", "node": "own"},
+    "node":        {"untrusted": "none", "guest": "none",    "known": "none",
+                    "owner": "full", "node": "own"},
+    # 未登记事件前缀:宁严勿宽,仅 owner 可见
+    "other":       {"untrusted": "none", "guest": "none",    "known": "none",
+                    "owner": "full", "node": "none"},
+}
+
+# summary 投递保留的状态变更摘要字段(§4.1 guest「仅状态变更摘要」/known 内容裁剪)
+_SUMMARY_KEYS = ("status", "kind", "name", "version", "outcome")
+
+
+def event_class(event: str) -> str:
+    for prefix, cls in _EVENT_CLASS_PREFIXES:
+        if event.startswith(prefix):
+            return cls
+    return "other"
+
+
+def event_decision(viewer_trust: str, viewer_session: str | None,
+                   event: str, session_key: str | None) -> str:
+    """§4.1 矩阵单点查表:事件类 × 观察者信任级 → 可见决策(四态)。"""
+    row = _VISIBILITY[event_class(event)]
+    decision = row.get(viewer_trust, row["untrusted"])  # 未知级宁严勿宽
+    if decision != "own":
+        return decision
+    if session_key is not None and session_key == viewer_session:
+        return "full"  # 本会话事件全文(他人会话在调用方已折算 none)
+    return "none"
 
 
 def event_visible_to(viewer_trust: str, viewer_session: str | None,
                      event: str, session_key: str | None) -> bool:
-    """§4.1 事件可见性矩阵(M2 子集:已广播事件均为会话作用域 agent.*)。
+    return event_decision(viewer_trust, viewer_session, event, session_key) != "none"
 
-    owner 全部;guest/known 仅本会话的 session./agent. 事件;untrusted/node
-    live 流不可见(堵 session.history 访问控制旁路)。矩阵其余行
-    (skill./memory./job./rollback. 等)随事件目录扩展逐格补齐;
-    viewer_session 在 M2 为 None(WS 连接未绑定会话身份,回环即 owner)。
-    """
-    if viewer_trust == "owner":
-        return True
-    if viewer_trust in ("guest", "known"):
-        return (session_key is not None and session_key == viewer_session
-                and event.startswith(("agent.", "session.")))
-    return False
+
+def summarize_event(payload: dict[str, Any]) -> dict[str, Any]:
+    """summary 决策的投递形态:仅保留状态变更摘要字段,并标记已裁剪。"""
+    clipped = {k: payload[k] for k in _SUMMARY_KEYS if k in payload}
+    clipped["summarized"] = True
+    return clipped
 
 
 def _lane_of(session_key: str, n_lanes: int) -> int:
@@ -313,16 +386,18 @@ class Gateway:
     async def _broadcast(self, event: str, payload: dict[str, Any]) -> None:
         session_key = payload.get("session_key")
         for ws in list(self._conns):
-            # §4.1 可见性:按连接信任级裁剪;未登记连接按 untrusted(宁严勿宽)
+            # §4.1 可见性:按连接信任级查表;未登记连接按 untrusted(宁严勿宽)
             trust = self._conn_trust.get(id(ws), "untrusted")
-            if not event_visible_to(trust, None, event,
-                                    session_key if isinstance(session_key, str) else None):
+            decision = event_decision(trust, None, event,
+                                      session_key if isinstance(session_key, str) else None)
+            if decision == "none":
                 continue
+            out = summarize_event(payload) if decision == "summary" else payload
             key = id(ws)
             self._seq[key] = self._seq.get(key, 0) + 1
             try:
                 await ws.send_json({"type": "event", "event_seq": self._seq[key],
-                                    "event": event, "payload": payload})
+                                    "event": event, "payload": out})
             except ConnectionError:
                 self._conns.discard(ws)
 

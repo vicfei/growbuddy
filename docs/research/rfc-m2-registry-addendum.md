@@ -1,0 +1,72 @@
+# RFC 候选:M2 实现期注册表增补提案(kind 枚举 / spec-constants / 矩阵代码化说明)
+
+> 定位:issue #23 的批量设计 RFC 素材汇总。冻结基线 `docs/design/`(R3 资产)**不因本文改动**;
+> 本文按 K.0.2 纪律整理代码先行落地的 additive 增补,供评审后并入注册表。
+> 证据形态:每条注明代码落点与真实运行佐证。截至 2026-10-10(M2 批次 4.5)。
+
+## A. kind 枚举 additive 增补(数据模型 §3.1)
+
+§3.1 现有枚举已含 `session.open|close`、`skill.commit|promote|quarantine`、`effect.apply` 族
+(Naga 细化形态的映射注记亦已在案)。代码先行新增、枚举缺失的共 4 条:
+
+| kind | 落地批次 | 语义 | 裁决点 |
+|---|---|---|---|
+| `trace.record` | M1 批次 1(#23 已登记) | 任务轨迹完成入账(traces 投影来源) | 命名:trace.record vs trace.completed |
+| `skill.use` | M1 收官 | 技能命中计量(检索注入/uses 计数;投影确定性) | 是否并入 skill.commit 载荷 |
+| `channel.bound` | M2-W1 | 渠道绑定确认(载荷:channel/ilink_user_id/baseurl;凭据本体不入账) | 与 `channel.fallback`(已在枚举)同族扩列 |
+| `channel.unbound` | M2-W1 | 渠道解绑 | 同上 |
+
+kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 等)已有 §3.1
+映射注记,不属缺口。
+
+## B. spec-constants 注册候选(7 条,均为 wechat 渠道域)
+
+以下常量以代码常量 + authority 注释先行(yaml 不动),全部有真实流量佐证:
+
+| constant_id | value | 语义 / 依据 | 代码落点 |
+|---|---|---|---|
+| `wechat_typing_refresh_sec` | 45 | typing status=1 约 60s 自过期,留 15s 余量(Weknora 实测) | wechat.py |
+| `wechat_typing_ticket_ttl_sec` | 540 | typing_ticket 官方 ~10min,9min 保守续取 | wechat.py |
+| `wechat_reply_chunk_chars` | 1900 | 单条上限 ~2000 的分段阈值;真实 4705 字 3 段送达实证 | wechat.py |
+| `wechat_media_max_bytes` | 20971520 | 媒体密文上限(超限拒收;K.7 大对象分层属 M3) | wechat.py |
+| `wechat_media_download_timeout_sec` | 240 | CDN 慢滴流总额限(逐读超时无效:460KB 实测拖 197s) | wechat.py |
+| `wechat_err14_pause_threshold` | 5 | 连续 -14(token 失效)→ 暂停渠道 | wechat.py |
+| `wechat_poll_backoff_max_sec` | 60 | 轮询错误指数退避上限(1s 起) | wechat.py |
+
+注:`guest_task_token_budget`(50,000)/`known_task_token_budget`(500,000)已在冻结注册表,
+批次 4 代码值与之一致,不属增补。§10.1 其余 guest 限流项(并发 1/速率 10rpm+突发 3/存储
+100MB·7天)未在 M2 实现,实现时按注册表现值。
+
+## C. §4.1 事件可见性矩阵:代码化形态说明
+
+批次 4.5 将矩阵全行落地为表驱动(`naga/gateway.py`):
+
+- **事件类归类**:session(agent./session.)、asset(skill./promotion./memory.)、ops(job./shadow./health.)、
+  governance(rollback./trust./constitution.)、node(node.*)、other(未登记前缀,宁严勿宽仅 owner)
+- **决策四态**:none / own(本会话,需 session_key 匹配)/ summary(状态变更摘要,投递时裁剪为
+  status·kind·name·version·outcome + summarized 标记)/ full
+- **逐格与规格一致**:asset 行 guest=summary;governance 行 known=summary、node=own;node 行
+  仅 owner=full、node=own
+- **实现偏差(留待裁决)**:①"summary 仅状态变更摘要"以字段白名单近似,语义裁剪粒度未做;
+  ②viewer_session 在 M2 为 None(WS 连接未绑定会话身份,回环即 owner)——非 owner 连接的
+  会话绑定形态随渠道扩展批次裁决;③node 类事件 M2 尚无产生源,行为按规格占位。
+
+## D. §5.6 cap→R 映射:代码化形态说明
+
+批次 4.5 将 cap→R 全映射落地(`naga/gateway.py`):
+
+- R0..R4 常量与 §5.6 表一致;`TRUST_R_CEILING`:guest=R0 / known=R1 / owner=无封顶(以 R4 表达)
+- `tool_risk` 优先级:显式 `risk_level` > 旧 `side_effect` 归一(read→R0,write→R2)> 未声明
+  默认 R4(§5.6"新 cap 未声明类别默认最高档")
+- `tools_for_trust` 按 §10.1 档位过滤;未知信任级无工具
+- **实现偏差(留待裁决)**:①side_effect="write" 归一为 R2(工作区外写)而非 R1——泛写
+  声明无工作区边界信息,宁严勿宽;②工作区 trust_ceiling 收紧参数(K.0.2"可收紧不可放宽")
+  未引入,当前仅信任级档位;③审批升档(R2 confirm/R3 审批队列/R4 双人复核)属模式系统(M4),
+  映射表已按 R 级就位。
+
+## E. 建议处置
+
+1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入
+   spec-constants.yaml v3;C/D 节偏差三条裁决后回写实现。
+2. 冻结检查器同步:kind 枚举检查规则(若 R14 覆盖)与 yaml 版本号随评审更新。
+3. 在案证据:.context/register.md 2026-10-10 各批次条目(真实微信流量/账本 seq)。

@@ -63,8 +63,10 @@ def test_tools_for_trust_guest_r0_only():
     assert [t.name for t in guest_tools] == ["web_search"]  # 只留显式 read
     assert [t.name for t in tools_for_trust("owner", tools)] == \
         ["web_search", "send_mail", "mystery"]
-    assert tools_for_trust("known", tools) == tools      # known R1(封顶属 R 级映射 RFC)
+    # known 档位 R1(§10.1):write(R2)与未声明(R4)同样不可见
+    assert [t.name for t in tools_for_trust("known", tools)] == ["web_search"]
     assert tools_for_trust(None, tools) == tools
+    assert tools_for_trust("untrusted", tools) == []      # 未知/拒绝级无工具
 
 
 # ---- run_agent 行为:封顶→aborted / untrusted→rejected / R0 过滤 ----
@@ -161,7 +163,7 @@ def test_run_agent_guest_tool_filter_reaches_loop(tmp_path):
     ("guest", "s1", "agent.completed", "s1", True),               # guest 本会话 ✅
     ("guest", "s1", "agent.completed", "s2", False),              # 他人会话 ❌
     ("guest", None, "agent.completed", "s1", False),              # 未绑定会话身份 ❌
-    ("guest", "s1", "skill.commit", "s1", False),                 # 全局资产事件不在子集
+    ("guest", "s1", "skill.commit", "s1", True),                  # 资产事件=summary 可见(§4.1)
     ("known", "s1", "agent.completed", "s1", True),               # known 本会话 ✅
     ("known", "s1", "agent.completed", "s9", False),
     ("untrusted", "s1", "agent.completed", "s1", False),          # live 流不可见
@@ -170,6 +172,126 @@ def test_run_agent_guest_tool_filter_reaches_loop(tmp_path):
 ])
 def test_event_visibility_matrix(viewer, viewer_session, event, session_key, expected):
     assert event_visible_to(viewer, viewer_session, event, session_key) is expected
+
+
+# ---- §4.1 全矩阵逐格(decision 四态;事件类 × 信任级) ----
+
+@pytest.mark.parametrize("event,viewer,viewer_session,session_key,expected", [
+    # session 类(agent./session.)
+    ("agent.completed", "owner", None, "any", "full"),
+    ("agent.completed", "guest", "s1", "s1", "full"),             # 本会话全文
+    ("agent.completed", "guest", "s1", "s2", "none"),             # 他人会话
+    ("session.message", "untrusted", "s1", "s1", "none"),
+    ("agent.completed", "node", None, "s1", "none"),
+    # asset 类(skill./promotion./memory.):guest 仅摘要
+    ("skill.commit", "guest", None, None, "summary"),
+    ("promotion.approved", "guest", None, None, "summary"),
+    ("memory.write", "known", None, None, "full"),
+    ("skill.commit", "untrusted", None, None, "none"),
+    ("skill.commit", "node", None, None, "none"),
+    # ops 类(job./shadow./health.):guest 不可见
+    ("job.fire", "guest", None, None, "none"),
+    ("health.loop_score", "known", None, None, "full"),
+    ("shadow.diff", "owner", None, None, "full"),
+    # governance 类(rollback./trust./constitution.):known 内容裁剪,node 自身相关
+    ("trust.linked", "known", None, None, "summary"),
+    ("rollback.marker", "guest", None, None, "none"),
+    ("constitution.violation", "owner", None, None, "full"),
+    ("trust.anchor_missing", "node", "n1", "n1", "full"),         # 自身相关(M2 语义占位)
+    ("trust.anchor_missing", "node", "n1", "n2", "none"),
+    # node 类:仅 owner 全文 / node 自身
+    ("node.joined", "known", None, None, "none"),
+    ("node.joined", "node", "n1", "n1", "full"),
+    # 未登记前缀:宁严勿宽,仅 owner
+    ("whoami.what", "known", None, None, "none"),
+    ("whoami.what", "owner", None, None, "full"),
+])
+def test_event_decision_full_matrix(event, viewer, viewer_session, session_key, expected):
+    from naga.gateway import event_decision
+    assert event_decision(viewer, viewer_session, event, session_key) == expected
+
+
+def test_event_class_classification():
+    from naga.gateway import event_class
+    assert event_class("agent.completed") == "session"
+    assert event_class("session.open") == "session"
+    assert event_class("skill.use") == "asset"
+    assert event_class("promotion.granted") == "asset"
+    assert event_class("memory.forget") == "asset"
+    assert event_class("job.missed") == "ops"
+    assert event_class("shadow.diff") == "ops"
+    assert event_class("health.loop_score") == "ops"
+    assert event_class("rollback.marker") == "governance"
+    assert event_class("trust.fused") == "governance"
+    assert event_class("constitution.violation") == "governance"
+    assert event_class("node.joined") == "node"
+    assert event_class("mystery.event") == "other"
+
+
+# ---- §5.6 cap→R 映射逐格 ----
+
+class _RiskyTool:
+    def __init__(self, name: str, risk: int | None):
+        self.name, self.description, self.parameters = name, "d", {"type": "object"}
+        if risk is not None:
+            self.risk_level = risk
+
+
+def test_tool_risk_precedence():
+    from naga.gateway import tool_risk
+    assert tool_risk(_RiskyTool("explicit", 3)) == 3            # 显式 risk_level 优先
+    assert tool_risk(_ReadTool()) == 0                          # side_effect=read → R0
+    assert tool_risk(_WriteTool()) == 2                         # side_effect=write → R2
+    assert tool_risk(_UndeclaredTool()) == 4                    # 未声明默认 R4(§5.6)
+
+
+def test_tools_for_trust_r_ceilings():
+    tools = [_RiskyTool("r0", 0), _RiskyTool("r1", 1),
+             _RiskyTool("r2", 2), _RiskyTool("r4", 4)]
+    assert [t.name for t in tools_for_trust("guest", tools)] == ["r0"]        # R0 封顶
+    assert [t.name for t in tools_for_trust("known", tools)] == ["r0", "r1"]  # R1 封顶
+    assert [t.name for t in tools_for_trust("owner", tools)] == \
+        ["r0", "r1", "r2", "r4"]                                              # 无封顶
+    assert tools_for_trust("weird", tools) == []                              # 未知级
+
+
+def test_web_search_declared_r0():
+    from naga.gateway import tool_risk
+    from naga.tools import WebSearchTool
+    assert WebSearchTool.risk_level == 0
+    assert tool_risk(WebSearchTool) == 0
+
+
+# ---- summary 投递(§4.1 guest/known 内容裁剪) ----
+
+def test_summarize_event_clips_to_status_fields():
+    from naga.gateway import summarize_event
+    payload = {"name": "web-research", "version": 3, "status": "active",
+               "branch": "local:s1", "content": "全文不外泄", "trace_id": "tr_x"}
+    clipped = summarize_event(payload)
+    assert clipped == {"name": "web-research", "version": 3, "status": "active",
+                       "summarized": True}
+
+
+def test_broadcast_delivers_summary_to_guest_full_to_owner(tmp_path):
+    from naga.gateway import summarize_event  # noqa: F401 —— 同族断言见下
+    gw, led = _gateway(tmp_path, _CountingAdapter)
+    owner_ws, guest_ws = _FakeWS(), _FakeWS()
+    gw._conns.update({owner_ws, guest_ws})
+    gw._conn_trust[id(owner_ws)] = "owner"
+    gw._conn_trust[id(guest_ws)] = "guest"
+
+    async def scenario():
+        await gw.broadcast("skill.commit", {"name": "s", "version": 2,
+                                            "status": "active",
+                                            "content": "全文仅 owner 可见"})
+
+    asyncio.run(scenario())
+    assert owner_ws.frames[0]["payload"]["content"] == "全文仅 owner 可见"
+    guest_payload = guest_ws.frames[0]["payload"]
+    assert guest_payload == {"name": "s", "version": 2, "status": "active",
+                             "summarized": True}
+    led.close()
 
 
 class _FakeWS:
