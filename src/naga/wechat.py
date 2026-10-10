@@ -480,6 +480,7 @@ class WeChatChannel:
         self._client = (self._client_factory(cred) if self._client_factory is not None
                         else ILinkClient(cred.bot_token, cred.baseurl or ILINK_BASE,
                                          self._request))
+        self._cursor = None  # 热插拔重绑:新 bot 的游标从空开始(旧游标对新 token 无效)
         self._running = True
         self._err14 = 0
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -531,6 +532,7 @@ class WeChatChannel:
                     self._cursor = r.next_cursor
                 for u in r.updates:
                     self._ingest(u)
+                await asyncio.sleep(0)  # 显式让出:零延迟上游/连续空转不得饿死同 loop 任务
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 —— 轮询循环必须存活,单轮失败退避重试
