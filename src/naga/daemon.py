@@ -58,7 +58,12 @@ async def amain(home: str) -> int:
                                          budget=budget, trace_id=trace_id,
                                          actor_trust=actor["trust"])
         peer = session_key.split(":", 2)[2] if session_key.count(":") >= 2 else session_key
-        reply = result.reply or f"({result.outcome}) {result.failure_analysis or ''}"
+        if result.reply:
+            reply = result.reply
+        elif result.outcome == "success":
+            reply = "(模型已完成推理但未产出正文——请缩短任务描述后重试)"
+        else:
+            reply = f"({result.outcome}) {result.failure_analysis or ''}"
         await wechat.send_reply(peer, reply, None)
         event = "agent.completed" if result.outcome == "success" else "agent.failed"
         await gateway.broadcast(event, {

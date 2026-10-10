@@ -49,7 +49,8 @@ class AgentLoop:
                  tools: list[Any] | None = None, skill_store: SkillStore | None = None,
                  session_key: str = "cli:local:owner", model_id: str = "deepseek-v4-flash",
                  max_steps: int = 8, trace_id: str | None = None,
-                 actor_trust: str | None = None):
+                 actor_trust: str | None = None,
+                 max_tokens: int = 8192):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
@@ -61,6 +62,7 @@ class AgentLoop:
         self._max_steps = max_steps
         self._trace_id = trace_id
         self._actor_trust = actor_trust
+        self._max_tokens = max_tokens  # 推理模型:reasoning+content 共享上限,须给足
         self._step_seq = 0
 
     # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
@@ -148,7 +150,8 @@ class AgentLoop:
         try:
             for _ in range(self._max_steps):
                 t0 = time.monotonic()
-                resp = await self._adapter.chat(messages, tool_specs or None)
+                resp = await self._adapter.chat(messages, tool_specs or None,
+                                                max_tokens=self._max_tokens)
                 ms = int((time.monotonic() - t0) * 1000)
                 usage = resp.prompt_tokens + resp.completion_tokens
                 self._budget.consume(usage)
@@ -218,7 +221,7 @@ class AgentLoop:
             f"最终结果:{reply}")
         try:
             resp = await self._adapter.chat([{"role": "user", "content": prompt}],
-                                            None, max_tokens=2048)
+                                            None, max_tokens=self._max_tokens)
         except kernel.QuotaExhausted:
             self._step_seq += 1
             rec.step(self._step_seq, "llm", "skill-distill", False,
