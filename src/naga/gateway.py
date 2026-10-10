@@ -276,7 +276,7 @@ class Gateway:
                                      status=502)
         import segno
         qr = segno.make(binding.qr_content, error="m")
-        data_url = qr.png_data_uri(scale=6, border=2)  # 本地生成,不走公网第三方
+        data_url = qr.png_data_uri(scale=8, border=2)  # 本地生成,不走公网第三方(~300px 级)
         return web.json_response({
             "ok": True, "qrcode": binding.qrcode, "qr_data_url": data_url,
             "instruction": "用微信扫码授权(仅支持单聊)"})

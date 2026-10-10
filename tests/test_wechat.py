@@ -359,3 +359,26 @@ def test_full_chain_message_to_reply_via_gateway_lane(tmp_path):
     assert body["msg"]["to_user_id"] == "wx-friend"
     assert body["msg"]["context_token"] == "ct-x"               # 串线
     assert body["msg"]["item_list"][0]["text_item"]["text"] == "微信回复"
+
+
+def test_webchat_page_contains_bind_ui(tmp_path):
+    """绑定 UI 元素随页面下发(二维码内嵌 + 自动轮询 + 解绑)。"""
+    import aiohttp
+
+    async def scenario():
+        led = DurableLedger(str(tmp_path / "home"))
+        gw = Gateway(led, make_adapter=lambda: _NoopAdapter())
+        port = await gw.start("127.0.0.1", 0)
+        try:
+            async with aiohttp.ClientSession() as s, \
+                    s.get(f"http://127.0.0.1:{port}/") as r:
+                html = await r.text()
+                assert r.status == 200
+                for marker in ("wxBind", "/wechat/bind/start", "bind/poll",
+                               "wxUnbind", "qr_data_url"):
+                    assert marker in html, marker
+        finally:
+            await gw.stop()
+            led.close()
+
+    asyncio.run(scenario())
