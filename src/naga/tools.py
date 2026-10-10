@@ -22,12 +22,13 @@ _WEB_SEARCH_PARAMETERS: dict[str, Any] = {
 
 
 class WebSearchTool:
-    """bocha 网页搜索(sideEffect=read)。"""
+    """bocha 网页搜索(§5.6 R0 只读感知;side_effect=read 为其归一形态)。"""
 
     name = "web_search"
     description = "搜索公开网页,返回标题、链接与摘要。适用于需要事实、最新信息或外部资料的任务。"
     parameters = _WEB_SEARCH_PARAMETERS
     side_effect = "read"
+    risk_level = 0  # §5.6 cap→R:R0 只读感知
 
     def __init__(self, store: CredentialStore, count: int = 5, timeout: float = 30.0):
         cfg = store.provider("bocha")
