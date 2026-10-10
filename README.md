@@ -148,3 +148,7 @@ Changes go through issue → branch → PR → CI (ruff / pyright strict /
 pytest / freeze checker) → merge commit. The frozen design baseline under
 `docs/design/` is never edited in place — propose changes via RFC
 (see `docs/research/rfc-m2-registry-addendum.md` for the format).
+
+## License
+
+[MIT](LICENSE) © 2026 vicfei
