@@ -132,3 +132,7 @@ issue 与 PR 使用**英文**(公开工件的工作语言;讨论中中英均可)
 变更流程:issue → 分支 → PR → CI(ruff / pyright strict / pytest /
 冻结检查器)→ merge commit。`docs/design/` 下的冻结基线不做原位编辑——
 改动走 RFC(格式参考 `docs/research/rfc-m2-registry-addendum.md`)。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 vicfei
