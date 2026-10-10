@@ -15,6 +15,7 @@ import base64
 import datetime
 import os
 import random
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -26,7 +27,9 @@ from naga.trust import derive_trust
 ILINK_BASE = "https://ilinkai.weixin.qq.com"
 ERR14_PAUSE_THRESHOLD = 5      # wechat_err14_pause_threshold 候选(随 #23 批 RFC 入注册表)
 BACKOFF_MAX_SEC = 60           # wechat_poll_backoff_max_sec 候选
-REPLY_HARD_LIMIT = 2000        # 单条上限;分段策略属 W2
+WECHAT_TYPING_REFRESH_SEC = 45.0    # spec-constants wechat_typing_refresh_sec(60s 自过期,留 15s 余量)
+WECHAT_TYPING_TICKET_TTL_SEC = 540.0  # spec-constants wechat_typing_ticket_ttl_sec(官方 ~10min)
+WECHAT_REPLY_CHUNK_CHARS = 1900      # spec-constants wechat_reply_chunk_chars(单条 ~2000 余量)
 
 # 请求函数:(url, method, headers, json_body|None, timeout_sec) -> (status, parsed_json)
 RequestFn = Callable[[str, str, dict[str, str], dict[str, Any] | None, float],
@@ -294,6 +297,24 @@ def extract_text(update: dict[str, Any]) -> str | None:
     return None
 
 
+def split_for_wechat(text: str, chunk_chars: int = WECHAT_REPLY_CHUNK_CHARS) -> list[str]:
+    """长回复分段:阈值 1900;边界优先换行>句号>空格,硬切兜底;多条加 (i/n) 序号。"""
+    if len(text) <= chunk_chars:
+        return [text]
+    raw: list[str] = []
+    rest = text
+    while len(rest) > chunk_chars:
+        window = rest[:chunk_chars]
+        cut = max(window.rfind("\n"), window.rfind("。"), window.rfind(" "))
+        at = cut + 1 if cut > chunk_chars * 0.6 else chunk_chars  # 边界太靠前不如硬切
+        raw.append(rest[:at].rstrip())
+        rest = rest[at:].lstrip()
+    if rest:
+        raw.append(rest)
+    n = len(raw)
+    return [f"({i + 1}/{n}) {part}" for i, part in enumerate(raw)]
+
+
 # runner 回调:(goal, session_key, actor{kind,id,trust}, ctx{trust_source}) -> Awaitable
 Runner = Callable[[str, str, dict[str, str], dict[str, str]], Awaitable[None]]
 
@@ -308,7 +329,9 @@ class WeChatChannel:
                  client_factory: Callable[[WeChatCredential], ILinkClient] | None = None,
                  on_token_expired: Callable[[], None] | None = None,
                  trust_file: str | None = None,
-                 ledger_append: Callable[[str, str, dict[str, Any]], Any] | None = None):
+                 ledger_append: Callable[[str, str, dict[str, Any]], Any] | None = None,
+                 typing_refresh_sec: float = WECHAT_TYPING_REFRESH_SEC,
+                 typing_ticket_ttl_sec: float = WECHAT_TYPING_TICKET_TTL_SEC):
         self._home = home
         self._runner = runner
         self._request = request
@@ -323,6 +346,9 @@ class WeChatChannel:
         self._err14 = 0
         self._state = WeChatChannelState()
         self._seen_sessions: set[str] = set()
+        self._tickets: dict[str, tuple[str, float]] = {}  # user_id → (ticket, monotonic)
+        self._typing_refresh = typing_refresh_sec
+        self._typing_ttl = typing_ticket_ttl_sec
 
     @property
     def is_running(self) -> bool:
@@ -350,11 +376,16 @@ class WeChatChannel:
 
     async def send_reply(self, user_id: str, content: str,
                          context_token: str | None) -> SendResult | None:
-        """回复(新 token 优先,持久态兜底);分段策略属 W2,先硬截 2000。"""
+        """分段回复(新 token 优先,持久态兜底);首条失败即停(避免对端失效空刷)。"""
         if self._client is None:
             return None
         token = context_token or self.context_token_of(user_id)
-        return await self._client.send_message(user_id, content[:REPLY_HARD_LIMIT], token)
+        last: SendResult | None = None
+        for part in split_for_wechat(content):
+            last = await self._client.send_message(user_id, part, token)
+            if last.errcode != 0:
+                break  # 首条失败即停
+        return last
 
     async def _poll_loop(self) -> None:
         backoff = 1.0
@@ -404,10 +435,66 @@ class WeChatChannel:
         self._session_open(session_key, from_user)
         derived = derive_trust("wechat", from_user, path=self._trust_file)
         task = asyncio.ensure_future(
-            self._runner(text.strip(), session_key,
-                         {"kind": "human", "id": from_user, "trust": derived.trust},
-                         {"trust_source": derived.source}))
+            self._run_with_typing(
+                text.strip(), session_key,
+                {"kind": "human", "id": from_user, "trust": derived.trust},
+                {"trust_source": derived.source},
+                token if isinstance(token, str) else None))
         task.add_done_callback(self._log_task_failure)
+
+    async def _run_with_typing(self, goal: str, session_key: str,
+                               actor: dict[str, str], ctx: dict[str, str],
+                               context_token: str | None) -> None:
+        """runner 期间显示「正在输入」(§4.6 L5);best-effort,失败静默降级。"""
+        typing = self._begin_typing(actor["id"], context_token)
+        try:
+            await self._runner(goal, session_key, actor, ctx)
+        finally:
+            await typing.stop()
+
+    def _begin_typing(self, user_id: str, context_token: str | None) -> _TypingHandle:
+        if self._client is None:
+            return _TypingHandle(None)
+        client = self._client
+        state = {"stopped": False}
+
+        async def _ticket() -> str | None:
+            hit = self._tickets.get(user_id)
+            if hit is not None and time.monotonic() - hit[1] < self._typing_ttl:
+                return hit[0]
+            result, ticket = await client.get_config(user_id, context_token)
+            if result.errcode != 0 or ticket is None:
+                return None
+            self._tickets[user_id] = (ticket, time.monotonic())
+            return ticket
+
+        async def _show() -> None:
+            try:
+                t = await _ticket()
+                if t is not None and not state["stopped"]:
+                    await client.send_typing(user_id, t, 1)
+            except Exception:  # noqa: BLE001, S110 —— typing 是表达力增强,失败静默不打扰
+                pass
+
+        async def _loop() -> None:
+            try:
+                while not state["stopped"]:
+                    await _show()
+                    await asyncio.sleep(self._typing_refresh)
+            except asyncio.CancelledError:
+                pass  # stop() 取消循环
+
+        async def _stop() -> None:
+            state["stopped"] = True
+            try:
+                hit = self._tickets.get(user_id)
+                if hit is not None:
+                    await client.send_typing(user_id, hit[0], 2)  # 2=结束(非 0)
+            except Exception:  # noqa: BLE001, S110
+                pass  # 清除失败无所谓:~60s 自动过期
+
+        loop_task = asyncio.create_task(_loop())
+        return _TypingHandle(_stop, loop_task)
 
     def _session_open(self, session_key: str, peer: str) -> None:
         """K.4:派生来源随 session.open 入账(每会话每进程一次)。"""
@@ -433,3 +520,18 @@ class WeChatChannel:
     def _log_task_failure(task: asyncio.Task[None]) -> None:
         if not task.cancelled() and task.exception() is not None:
             print(f"[wechat] 消息处理异常: {str(task.exception())[:100]}")
+
+
+class _TypingHandle:
+    """typing 会话句柄:stop() 取消周期循环并补 status=2。"""
+
+    def __init__(self, stop_fn: Callable[[], Awaitable[None]] | None,
+                 loop_task: asyncio.Task[None] | None = None):
+        self._stop_fn = stop_fn
+        self._loop_task = loop_task
+
+    async def stop(self) -> None:
+        if self._loop_task is not None and not self._loop_task.done():
+            self._loop_task.cancel()
+        if self._stop_fn is not None:
+            await self._stop_fn()

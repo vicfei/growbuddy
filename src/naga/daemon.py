@@ -90,8 +90,16 @@ async def amain(home: str) -> int:
     await stop.wait()
 
     wechat.stop()
-    await gateway.stop()
-    led.close()
+
+    async def _cleanup() -> None:
+        await gateway.stop()
+        led.close()
+
+    try:  # #39:清理超时兜底——SIGTERM 后卡死则强制退出,不让僵尸进程占口
+        await asyncio.wait_for(_cleanup(), timeout=10.0)
+    except TimeoutError:
+        print("[daemon] 清理超时(10s),强制退出(#39)")
+
     for marker in (ready, pidfile):
         if os.path.exists(marker):
             os.remove(marker)
