@@ -50,7 +50,7 @@ class AgentLoop:
                  session_key: str = "cli:local:owner", model_id: str = "deepseek-v4-flash",
                  max_steps: int = 8, trace_id: str | None = None,
                  actor_trust: str | None = None,
-                 max_tokens: int = 8192):
+                 max_tokens: int = 8192, trace_parent: str | None = None):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
@@ -63,6 +63,7 @@ class AgentLoop:
         self._trace_id = trace_id
         self._actor_trust = actor_trust
         self._max_tokens = max_tokens  # 推理模型:reasoning+content 共享上限,须给足
+        self._trace_parent = trace_parent
         self._step_seq = 0
 
     # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
@@ -141,7 +142,8 @@ class AgentLoop:
                             skills_loaded=skills,
                             env={"model": self._model_id,
                                  "channel": self._session_key.split(":", 1)[0],
-                                 "actor_trust": self._actor_trust})
+                                 "actor_trust": self._actor_trust},
+                            parent_trace=self._trace_parent)
         self._step_seq = 0
         self._tool_steps = 0
         self._tool_log: list[dict[str, Any]] = []

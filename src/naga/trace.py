@@ -88,14 +88,15 @@ class TraceRecorder:
                  agent_id: str | None = None, inbound: Any = None,
                  skills_loaded: list[str] | None = None,
                  env: dict[str, Any] | None = None,
-                 extra_redact_terms: list[str] | None = None):
+                 extra_redact_terms: list[str] | None = None,
+                 parent_trace: str | None = None):
         self._ledger = ledger
         self._t0 = time.monotonic()
         self._steps: list[dict[str, Any]] = []
         self._bundle_steps: list[dict[str, Any]] = []
         self._trace = {
             "trace_id": trace_id, "session_key": session_key, "agent_id": agent_id,
-            "parent_trace": None, "skills_loaded": skills_loaded or [],
+            "parent_trace": parent_trace, "skills_loaded": skills_loaded or [],
             "steps": self._steps, "outcome": "success", "failure_analysis": None,
             "cost": {"tokens": 0, "usd_cents": 0}, "duration_ms": 0,
             "replay_bundle_cas": None, "task_cluster": None,
