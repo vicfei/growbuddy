@@ -1,11 +1,12 @@
-"""微信个人号 Bot 通道(M2-W1 文本全链路)。
+"""微信个人号 Bot 通道(M2-W1 文本 / W2 typing+分段 / W3 媒体)。
 
 底座:腾讯 iLink Bot API(ilinkai.weixin.qq.com)——纯出站长轮询,宪法层
 不破(默认回环绑定由网关保证)。契约以 Samsara 生产代码为准(逆向自
 Weknora),对照表见 docs/research/wechat-ilink-borrowing.md。
 
-W1 范围:文本收发全链路 + 绑定 + context_token 持久化 + -14 自愈暂停;
-typing/分段/媒体属 W2/W3。请求函数构造注入(fake 零网络契约测试)。
+W3 媒体:CDN 下载(固定基址自构 URL,SSRF 免疫)→ AES-128-ECB 解密 →
+CAS 入档(naga-media/0)→ 以档案引用文案入 lane;失败降级文案不静默丢。
+请求函数构造注入(fake 零网络契约测试)。
 """
 
 from __future__ import annotations
@@ -13,15 +14,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import hashlib
+import json
 import os
 import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from pydantic import BaseModel
 
+from naga.ledger_store import CAS
 from naga.trust import derive_trust
 
 ILINK_BASE = "https://ilinkai.weixin.qq.com"
@@ -30,10 +36,21 @@ BACKOFF_MAX_SEC = 60           # wechat_poll_backoff_max_sec 候选
 WECHAT_TYPING_REFRESH_SEC = 45.0    # spec-constants wechat_typing_refresh_sec(60s 自过期,留 15s 余量)
 WECHAT_TYPING_TICKET_TTL_SEC = 540.0  # spec-constants wechat_typing_ticket_ttl_sec(官方 ~10min)
 WECHAT_REPLY_CHUNK_CHARS = 1900      # spec-constants wechat_reply_chunk_chars(单条 ~2000 余量)
+WECHAT_CDN_BASE = "https://novac2c.cdn.weixin.qq.com/c2c"  # 固定基址——URL 自构,SSRF 免疫
+WECHAT_MEDIA_MAX_BYTES = 20_971_520  # spec-constants wechat_media_max_bytes(超限拒收;K.7 分层属 M3)
 
 # 请求函数:(url, method, headers, json_body|None, timeout_sec) -> (status, parsed_json)
 RequestFn = Callable[[str, str, dict[str, str], dict[str, Any] | None, float],
                      Awaitable[tuple[int, Any]]]
+
+# 媒体下载函数:(url) -> (status, body_bytes);独立于 RequestFn(CDN 响应为二进制)
+MediaFetch = Callable[[str], Awaitable[tuple[int, bytes]]]
+
+
+async def _httpx_media_fetch(url: str) -> tuple[int, bytes]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url)
+        return resp.status_code, resp.content
 
 
 async def _httpx_request(url: str, method: str, headers: dict[str, str],
@@ -297,6 +314,99 @@ def extract_text(update: dict[str, Any]) -> str | None:
     return None
 
 
+# ── 媒体消息(CDN + AES-128-ECB,Weknora adapter.go/crypto.go 契约;W3)──
+
+
+class MediaPayload(BaseModel):
+    kind: str              # image | file(语音走 extract_text 的转写分支)
+    file_name: str
+    encrypt_query_param: str
+    aes_key: str           # 原始字符串(三格式,parse_ilink_aes_key 归一)
+
+
+def extract_media(update: dict[str, Any]) -> MediaPayload | None:
+    """从 item_list 提取媒体载荷(type 2=图片/4=文件;缺字段返回 None)。"""
+    raw_items: Any = update.get("item_list")
+    if not isinstance(raw_items, list):
+        return None
+    mid = update.get("message_id")
+    stamp = mid if isinstance(mid, (str, int)) and str(mid) else int(time.time())
+    for raw in cast("list[Any]", raw_items):
+        item = _as_dict(raw)
+        itype = item.get("type")
+        if itype == 2:
+            img = _as_dict(item.get("image_item"))
+            media = _as_dict(img.get("media"))
+            param = media.get("encrypt_query_param")
+            aes: Any = img.get("aeskey")  # image_item.aeskey 为原生 hex32 首选
+            if not (isinstance(aes, str) and aes):
+                aes = media.get("aes_key")
+            if isinstance(param, str) and param and isinstance(aes, str) and aes:
+                return MediaPayload(kind="image", file_name=f"img_{stamp}.png",
+                                    encrypt_query_param=param, aes_key=aes)
+            return None
+        if itype == 4:
+            fle = _as_dict(item.get("file_item"))
+            media = _as_dict(fle.get("media"))
+            param = media.get("encrypt_query_param")
+            aes = media.get("aes_key")
+            name = fle.get("file_name")
+            if isinstance(param, str) and param and isinstance(aes, str) and aes:
+                fname = name if isinstance(name, str) and name else f"file_{stamp}"
+                return MediaPayload(kind="file", file_name=fname,
+                                    encrypt_query_param=param, aes_key=aes)
+            return None
+    return None
+
+
+def cdn_download_url(encrypt_query_param: str) -> str:
+    # 消息只携带加密查询参数,基址为固定常量——对端无法注入任意 URL(SSRF 免疫)
+    return f"{WECHAT_CDN_BASE}/download?encrypted_query_param={quote(encrypt_query_param, safe='')}"
+
+
+def parse_ilink_aes_key(raw: str) -> bytes:
+    """AES 密钥三格式归一为 16 字节:① base64(16 原始字节)② base64(hex32 字符串)
+    ③ 原生 hex32 字符(image_item.aeskey 常见形态)。"""
+    if not raw:
+        raise ValueError("aes key 为空")
+    if len(raw) == 32 and all(c in "0123456789abcdefABCDEF" for c in raw):
+        return bytes.fromhex(raw)  # ③
+    decoded = base64.b64decode(raw, validate=True)
+    if len(decoded) == 16:
+        return decoded  # ①
+    if len(decoded) == 32:
+        try:
+            hex_str = decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"无法解析 aes key(长度 {len(raw)})") from None
+        if len(hex_str) == 32 and all(c in "0123456789abcdefABCDEF" for c in hex_str):
+            return bytes.fromhex(hex_str)  # ②
+    raise ValueError(f"无法解析 aes key(长度 {len(raw)})")
+
+
+def decrypt_ilink_media(ciphertext: bytes, aes_key_raw: str) -> bytes:
+    """AES-128-ECB 解密 + PKCS#7 去皮(ECB 无 IV——协议契约如此,非本方选型)。"""
+    if not ciphertext or len(ciphertext) % 16 != 0:
+        raise ValueError(f"密文长度 {len(ciphertext)} 非 16 的倍数")
+    key = parse_ilink_aes_key(aes_key_raw)
+    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+    padded = decryptor.update(ciphertext) + decryptor.finalize()
+    pad = padded[-1]
+    if not 1 <= pad <= 16 or padded[-pad:] != bytes([pad]) * pad:
+        raise ValueError("PKCS#7 填充非法(密钥错误或密文损坏)")
+    return padded[:-pad]
+
+
+def media_cas_object(kind: str, file_name: str, data: bytes) -> bytes:
+    """媒体入 CAS 的对象形态(bytes 走 base64——CAS 为对象库;哈希供校验)。"""
+    obj = {"schema": "naga-media/0", "kind": kind, "file_name": file_name,
+           "bytes_b64": base64.b64encode(data).decode(),
+           "sha256": hashlib.sha256(data).hexdigest(),
+           "size_bytes": len(data),
+           "saved_at": datetime.datetime.now(datetime.UTC).isoformat()}
+    return json.dumps(obj, ensure_ascii=False, indent=2).encode()
+
+
 def split_for_wechat(text: str, chunk_chars: int = WECHAT_REPLY_CHUNK_CHARS) -> list[str]:
     """长回复分段:阈值 1900;边界优先换行>句号>空格,硬切兜底;多条加 (i/n) 序号。"""
     if len(text) <= chunk_chars:
@@ -331,7 +441,9 @@ class WeChatChannel:
                  trust_file: str | None = None,
                  ledger_append: Callable[[str, str, dict[str, Any]], Any] | None = None,
                  typing_refresh_sec: float = WECHAT_TYPING_REFRESH_SEC,
-                 typing_ticket_ttl_sec: float = WECHAT_TYPING_TICKET_TTL_SEC):
+                 typing_ticket_ttl_sec: float = WECHAT_TYPING_TICKET_TTL_SEC,
+                 media_fetch: MediaFetch = _httpx_media_fetch,
+                 cas: CAS | None = None):
         self._home = home
         self._runner = runner
         self._request = request
@@ -349,6 +461,8 @@ class WeChatChannel:
         self._tickets: dict[str, tuple[str, float]] = {}  # user_id → (ticket, monotonic)
         self._typing_refresh = typing_refresh_sec
         self._typing_ttl = typing_ticket_ttl_sec
+        self._media_fetch = media_fetch
+        self._cas = cas
 
     @property
     def is_running(self) -> bool:
@@ -426,7 +540,9 @@ class WeChatChannel:
             if not isinstance(from_user, str) or not from_user:
                 return
         text = extract_text(update)
-        if text is None or not text.strip():
+        goal = text.strip() if isinstance(text, str) and text.strip() else None
+        media = extract_media(update) if goal is None else None  # 文本分支优先(语音转写同)
+        if goal is None and media is None:
             return
         token = update.get("context_token")
         if isinstance(token, str) and token:
@@ -434,13 +550,45 @@ class WeChatChannel:
         session_key = f"wechat:dm:{from_user}"
         self._session_open(session_key, from_user)
         derived = derive_trust("wechat", from_user, path=self._trust_file)
-        task = asyncio.ensure_future(
-            self._run_with_typing(
-                text.strip(), session_key,
-                {"kind": "human", "id": from_user, "trust": derived.trust},
-                {"trust_source": derived.source},
-                token if isinstance(token, str) else None))
+        actor = {"kind": "human", "id": from_user, "trust": derived.trust}
+        ctx = {"trust_source": derived.source}
+        context_token = token if isinstance(token, str) else None
+        if goal is not None:
+            task = asyncio.ensure_future(
+                self._run_with_typing(goal, session_key, actor, ctx, context_token))
+        else:
+            assert media is not None
+            task = asyncio.ensure_future(
+                self._ingest_media(media, session_key, actor, ctx, context_token))
         task.add_done_callback(self._log_task_failure)
+
+    async def _ingest_media(self, media: MediaPayload, session_key: str,
+                            actor: dict[str, str], ctx: dict[str, str],
+                            context_token: str | None) -> None:
+        """媒体落地:CDN 下载(固定基址,SSRF 免疫)→ AES 解密 → CAS 入档 →
+        以档案引用文案入 lane;失败降级文案(不静默丢)。"""
+        label = "图片" if media.kind == "image" else "文件"
+        try:
+            blob = await self._download_media(media)
+            if self._cas is None:
+                goal = (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B);"
+                        f"未配置 CAS 存储,内容未存档")
+            else:
+                cas_id = self._cas.put(media_cas_object(media.kind, media.file_name, blob))
+                goal = (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B),"
+                        f"已解密存档 CAS {cas_id[7:23]}…;内容为二进制,需要时可引用该档案说明")
+        except Exception as err:  # noqa: BLE001 —— 媒体失败降级文案,不上抛杀消息处理
+            goal = f"[{label}] {media.file_name} 接收失败({str(err)[:80]})——请重发或改用文字描述"
+        await self._run_with_typing(goal, session_key, actor, ctx, context_token)
+
+    async def _download_media(self, media: MediaPayload) -> bytes:
+        status, body = await self._media_fetch(cdn_download_url(media.encrypt_query_param))
+        if status != 200:
+            raise ValueError(f"CDN HTTP {status}")
+        if len(body) > WECHAT_MEDIA_MAX_BYTES:
+            raise ValueError(
+                f"密文 {len(body)}B 超 wechat_media_max_bytes={WECHAT_MEDIA_MAX_BYTES}B 上限")
+        return decrypt_ilink_media(body, media.aes_key)
 
     async def _run_with_typing(self, goal: str, session_key: str,
                                actor: dict[str, str], ctx: dict[str, str],

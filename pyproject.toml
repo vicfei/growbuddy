@@ -14,6 +14,7 @@ dependencies = [
   "httpx>=0.27",      # LLM/搜索适配器异步客户端(M1 批次 2)
   "aiohttp>=3.10",    # WS 网关 + WebChat 静态页(M1 批次 3)
   "segno>=1.6",       # 微信绑定二维码本地生成(M2-W1,不走公网第三方)
+  "cryptography>=42", # 微信媒体 AES-128-ECB 解密(M2-W3)
 ]
 
 [project.optional-dependencies]

@@ -74,7 +74,8 @@ async def amain(home: str) -> int:
     wechat = WeChatChannel(
         home=home, runner=wechat_runner,
         on_token_expired=lambda: print("[wechat] Token 失效,渠道已暂停;请重新扫码绑定"),
-        ledger_append=lambda kind, owner, payload: led.append(kind, owner, payload))
+        ledger_append=lambda kind, owner, payload: led.append(kind, owner, payload),
+        cas=led.cas)  # W3:媒体解密后入档(assets/blobs,>64MB 走 K.7 旁路)
     gateway.attach_wechat(wechat)
 
     port = int(os.environ.get("NAGA_WS_PORT", str(WS_PORT)))  # 0 = 临时端口(测试/并行)
