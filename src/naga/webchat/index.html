@@ -6,7 +6,7 @@
 <title>Naga WebChat</title>
 <style>
   body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; }
-  #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; height: 60vh;
+  #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; height: 55vh;
          overflow-y: auto; display: flex; flex-direction: column; gap: .5rem; }
   .you { align-self: flex-end; background: #e7f0ff; padding: .4rem .8rem; border-radius: 10px; }
   .naga { align-self: flex-start; background: #f0f0f0; padding: .4rem .8rem; border-radius: 10px;
@@ -14,6 +14,16 @@
   .sys { align-self: center; color: #888; font-size: .85rem; }
   form { display: flex; gap: .5rem; margin-top: .8rem; }
   input { flex: 1; padding: .5rem; }
+  /* 微信绑定面板 */
+  .wx { margin-top: 1.2rem; padding: .9rem; border: 1px dashed #ccc; border-radius: 8px; }
+  .wx h4 { margin: 0 0 .6rem; }
+  .wx img { max-width: 300px; border: 1px solid #eee; border-radius: 4px; background: #fff; }
+  .wx .status { margin-top: .6rem; font-size: .9rem; color: #555; }
+  #wxBtn { color: #07c160; border: 1px solid #07c160; background: #fff;
+           padding: .4rem 1rem; border-radius: 6px; cursor: pointer; }
+  #wxUnbind { margin-left: .8rem; color: #c0392b; border: 1px solid #c0392b; background: #fff;
+              padding: .4rem 1rem; border-radius: 6px; cursor: pointer; }
+  #wxState { margin-left: .8rem; font-size: .9rem; color: #888; }
 </style>
 </head>
 <body>
@@ -23,6 +33,18 @@
   <input id="goal" placeholder="给 Naga 一个任务…" autocomplete="off">
   <button>发送</button>
 </form>
+
+<div class="wx">
+  <button id="wxBtn" onclick="wxBind()">📱 绑定微信</button>
+  <button id="wxUnbind" style="display:none" onclick="wxUnbind()">解绑微信</button>
+  <span id="wxState"></span>
+  <div id="wxBox" style="display:none">
+    <h4>微信扫码绑定</h4>
+    <div><img id="wxQr" alt="绑定二维码"></div>
+    <div class="status" id="wxPoll"></div>
+  </div>
+</div>
+
 <script>
 const logEl = document.getElementById("log");
 const stateEl = document.getElementById("state");
@@ -65,6 +87,75 @@ function send() {
     idempotency_key: "ik_" + crypto.randomUUID()}));
   return false;
 }
+
+/* ── 微信扫码绑定(二维码本地渲染,内嵌显示;页面自动长轮询) ── */
+const wxBtn = document.getElementById("wxBtn");
+const wxUnbindBtn = document.getElementById("wxUnbind");
+const wxStateEl = document.getElementById("wxState");
+const wxBox = document.getElementById("wxBox");
+const wxPollEl = document.getElementById("wxPoll");
+let wxPolling = false;
+
+async function wxCheck() {
+  try {
+    const j = await (await fetch("/wechat/status")).json();
+    if (j.bound) {
+      wxStateEl.textContent = "✓ 微信已绑定";
+      wxStateEl.style.color = "#07c160";
+      wxBtn.style.display = "none";
+      wxUnbindBtn.style.display = "";
+      wxBox.style.display = "none";
+    } else {
+      wxStateEl.textContent = j.polling ? "已绑定?" : "未绑定";
+      wxStateEl.style.color = "#888";
+      wxBtn.style.display = "";
+      wxUnbindBtn.style.display = "none";
+    }
+  } catch (e) { wxStateEl.textContent = "状态查询失败"; }
+}
+
+async function wxBind() {
+  if (wxPolling) return;
+  wxPolling = true;
+  wxBox.style.display = "block";
+  wxPollEl.textContent = "正在申请二维码…";
+  try {
+    const r = await fetch("/wechat/bind/start");
+    const j = await r.json();
+    if (!j.ok) { wxPollEl.textContent = "❌ " + (j.error ?? "获取二维码失败"); wxPolling = false; return; }
+    document.getElementById("wxQr").src = j.qr_data_url;   // 服务端本地渲染的 PNG data URL
+    wxPollEl.textContent = (j.instruction ?? "用微信扫码") + ";等待扫码…(服务端每次长轮询约 35s)";
+    for (let i = 1; i <= 40; i++) {                          // 最多 ~20 分钟
+      const pr = await fetch("/wechat/bind/poll/" + encodeURIComponent(j.qrcode));
+      const pj = await pr.json();
+      if (pj.status === "confirmed") {
+        wxPollEl.textContent = "✅ " + (pj.message ?? "绑定成功,消息通道已启动");
+        wxCheck();
+        wxPolling = false;
+        return;
+      }
+      if (pj.status === "scaned") { wxPollEl.textContent = `已扫码,等待微信确认…(第 ${i} 轮)`; continue; }
+      if (pj.status === "expired") {
+        wxPollEl.textContent = "⏰ 二维码已过期";
+        wxPolling = false;
+        return;
+      }
+      wxPollEl.textContent = `等待扫码…(第 ${i} 轮长轮询)`;
+    }
+    wxPollEl.textContent = "超时,请点击「绑定微信」重试";
+  } catch (e) {
+    wxPollEl.textContent = "❌ " + e;
+  }
+  wxPolling = false;
+}
+
+async function wxUnbind() {
+  if (!confirm("确定解绑微信?消息通道将停止。")) return;
+  await fetch("/wechat/unbind");
+  wxCheck();
+}
+
+wxCheck();
 </script>
 </body>
 </html>
