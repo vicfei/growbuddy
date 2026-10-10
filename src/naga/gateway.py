@@ -7,7 +7,8 @@ event_seq 递增的事件推送(R6-A3:不走断线续传)。会话队列:N = min
 串行(INV-4 会话粒度,§13.2 纪律①);lane = sha256(session_key) mod N。
 
 声明(见 issue #27):幂等缓存直接写 SQLite 不入账(丢失由 read 类工具
-可重放性兜底);事件全广播(可见性矩阵完整实现属 M2);心跳用 aiohttp
+可重放性兜底);事件可见性 §4.1 矩阵子集已实现(event_visible_to,回环
+连接即 owner;非 owner 连接的会话绑定属后续批次);心跳用 aiohttp
 内建 ping/pong 策略等效覆盖 30/90 语义。
 """
 
@@ -26,7 +27,7 @@ from typing import Any, cast
 from aiohttp import WSMsgType, web
 
 from naga import kernel, storage
-from naga.agent import AgentLoop
+from naga.agent import AgentLoop, AgentResult
 from naga.ledger_store import DurableLedger
 from naga.llm import ModelAdapter
 from naga.skills import SkillStore
@@ -37,6 +38,49 @@ FRAME_MAX_BYTES = 1048576     # spec-constants frame_max_bytes / 接口 §2.2
 HEARTBEAT_SEC = 30            # ws_heartbeat_interval_sec
 
 _LOOPBACK = {"127.0.0.1", "::1"}
+
+
+# ── §10.1 信任级策略(单点:run_agent;候选 spec-constants 随 #23 批 RFC)──
+
+GUEST_TASK_TOKEN_BUDGET = 50_000   # spec-constants guest_task_token_budget(§10.1)
+KNOWN_TASK_TOKEN_BUDGET = 500_000  # spec-constants known_task_token_budget(§10.1)
+
+
+def task_budget(actor_trust: str | None, requested: int) -> int:
+    """§10.1 单任务 token 预算:guest/known 封顶,owner/未标注用请求值;
+    untrusted 及未知级 → 0(仅 hello 握手与只读事件流,不执行任务)。"""
+    if actor_trust == "guest":
+        return min(requested, GUEST_TASK_TOKEN_BUDGET)
+    if actor_trust == "known":
+        return min(requested, KNOWN_TASK_TOKEN_BUDGET)
+    if actor_trust is None or actor_trust == "owner":
+        return requested
+    return 0
+
+
+def tools_for_trust(actor_trust: str | None, tools: list[Any]) -> list[Any]:
+    """§10.1 R 级封顶:guest 仅 R0(只读类副作用)。工具须显式声明
+    side_effect="read" 才对 guest 可见——未声明者宁严勿宽一并排除。"""
+    if actor_trust == "guest":
+        return [t for t in tools if getattr(t, "side_effect", None) == "read"]
+    return tools
+
+
+def event_visible_to(viewer_trust: str, viewer_session: str | None,
+                     event: str, session_key: str | None) -> bool:
+    """§4.1 事件可见性矩阵(M2 子集:已广播事件均为会话作用域 agent.*)。
+
+    owner 全部;guest/known 仅本会话的 session./agent. 事件;untrusted/node
+    live 流不可见(堵 session.history 访问控制旁路)。矩阵其余行
+    (skill./memory./job./rollback. 等)随事件目录扩展逐格补齐;
+    viewer_session 在 M2 为 None(WS 连接未绑定会话身份,回环即 owner)。
+    """
+    if viewer_trust == "owner":
+        return True
+    if viewer_trust in ("guest", "known"):
+        return (session_key is not None and session_key == viewer_session
+                and event.startswith(("agent.", "session.")))
+    return False
 
 
 def _lane_of(session_key: str, n_lanes: int) -> int:
@@ -74,6 +118,7 @@ class Gateway:
         self._workers: list[asyncio.Task[None]] = []
         self._conns: set[web.WebSocketResponse] = set()
         self._seq: dict[int, int] = {}
+        self._conn_trust: dict[int, str] = {}  # id(ws) → 信任级(§4.1 事件可见性)
         self._runner: web.AppRunner | None = None
         self.port: int = 0
 
@@ -144,6 +189,7 @@ class Gateway:
                             "mode_defaults": {}})
         self._conns.add(ws)
         self._seq[id(ws)] = 0
+        self._conn_trust[id(ws)] = "owner"  # 回环连接按 owner(B7;§4.1 可见性基准)
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -154,6 +200,7 @@ class Gateway:
         finally:
             self._conns.discard(ws)
             self._seq.pop(id(ws), None)
+            self._conn_trust.pop(id(ws), None)
         return ws
 
     async def _handle_req(self, ws: web.WebSocketResponse, req: dict[str, Any]) -> None:
@@ -232,11 +279,21 @@ class Gateway:
 
     async def run_agent(self, *, session_key: str, goal: str, budget: int,
                         trace_id: str, actor_trust: str | None = None) -> Any:
-        """会话内执行一次 AgentLoop(渠道 runner 复用;结果事件由调用方处理)。"""
+        """会话内执行一次 AgentLoop(渠道 runner 复用;结果事件由调用方处理)。
+
+        §10.1 信任级策略单点:预算封顶 + guest R0 工具过滤 + untrusted 拒绝。
+        """
+        budget = task_budget(actor_trust, budget)
+        if budget <= 0:
+            return AgentResult(
+                reply=("当前信任级不足以执行任务(仅支持握手与只读事件流,§10.1)"
+                       "——请联系 owner 完成绑定或升级信任级"),
+                outcome="rejected", trace_id=trace_id, steps=0, tokens=0, cost_cents=0)
         kern = kernel.Kernel(ledger=cast("kernel.Ledger", self._ledger))  # 鸭子类型
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
                          budget=kernel.Budget(budget),
-                         adapter=self._make_adapter(), tools=self._tools,
+                         adapter=self._make_adapter(),
+                         tools=tools_for_trust(actor_trust, self._tools),
                          skill_store=SkillStore(self._ledger),
                          session_key=session_key, trace_id=trace_id,
                          actor_trust=actor_trust)
@@ -254,7 +311,13 @@ class Gateway:
             "tokens": result.tokens, "failure_analysis": result.failure_analysis})
 
     async def _broadcast(self, event: str, payload: dict[str, Any]) -> None:
+        session_key = payload.get("session_key")
         for ws in list(self._conns):
+            # §4.1 可见性:按连接信任级裁剪;未登记连接按 untrusted(宁严勿宽)
+            trust = self._conn_trust.get(id(ws), "untrusted")
+            if not event_visible_to(trust, None, event,
+                                    session_key if isinstance(session_key, str) else None):
+                continue
             key = id(ws)
             self._seq[key] = self._seq.get(key, 0) + 1
             try:

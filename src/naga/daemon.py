@@ -17,9 +17,21 @@ from typing import Any
 from naga import storage
 from naga.gateway import WS_PORT, Gateway
 
-GUEST_TASK_TOKEN_BUDGET = 50_000  # spec-constants guest_task_token_budget / 接口 §10.1
+OWNER_TASK_BASE_BUDGET = 200_000  # owner 自设基线(§10.1);信任级封顶由 gateway 单点执行
 from naga.ledger_store import DurableLedger
 from naga.llm import CredentialStore, DeepSeekAdapter
+
+
+def reply_for(result: Any) -> str:
+    """任务结果 → 微信回复文案(aborted 预算耗尽给出升级路径提示,§10.1)。"""
+    if result.reply:
+        return result.reply
+    if result.outcome == "success":
+        return "(模型已完成推理但未产出正文——请缩短任务描述后重试)"
+    if result.outcome == "aborted" and result.failure_analysis == "预算耗尽":
+        return ("本次任务超出当前信任级的 token 预算上限(guest 单任务 50,000)"
+                "——长任务请拆分发送,或联系 owner 升级信任级")
+    return f"({result.outcome}) {result.failure_analysis or ''}"
 
 
 def _write_marker(path: str, text: str) -> None:
@@ -62,20 +74,13 @@ async def amain(home: str) -> int:
 
     async def wechat_runner(goal: str, session_key: str,
                             actor: dict[str, str], _ctx: dict[str, str]) -> None:
-        budget = min(GUEST_TASK_TOKEN_BUDGET, 200_000) if actor["trust"] == "guest" \
-            else 200_000
         trace_id = "tr_" + uuid.uuid4().hex[:24]
         result = await gateway.run_agent(session_key=session_key, goal=goal,
-                                         budget=budget, trace_id=trace_id,
+                                         budget=OWNER_TASK_BASE_BUDGET,
+                                         trace_id=trace_id,
                                          actor_trust=actor["trust"])
         peer = session_key.split(":", 2)[2] if session_key.count(":") >= 2 else session_key
-        if result.reply:
-            reply = result.reply
-        elif result.outcome == "success":
-            reply = "(模型已完成推理但未产出正文——请缩短任务描述后重试)"
-        else:
-            reply = f"({result.outcome}) {result.failure_analysis or ''}"
-        await wechat.send_reply(peer, reply, None)
+        await wechat.send_reply(peer, reply_for(result), None)
         event = "agent.completed" if result.outcome == "success" else "agent.failed"
         await gateway.broadcast(event, {
             "session_key": session_key, "trace_id": trace_id, "reply": result.reply,
