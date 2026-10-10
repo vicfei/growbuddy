@@ -27,7 +27,18 @@ def _write_marker(path: str, text: str) -> None:
         fh.write(text)
 
 
+def wechat_media_options(creds: CredentialStore) -> dict[str, Any]:
+    """渠道媒体能力装配:有 dashscope 凭据则开图片内容识别,否则仅存档。"""
+    if not creds.has("dashscope"):
+        return {}
+    from naga.llm import DashScopeVisionDescriber
+
+    describer = DashScopeVisionDescriber.from_credentials(creds)
+    return {"vision_describe": describer.describe}
+
+
 async def amain(home: str) -> int:
+    print(f"[daemon] starting home={home}", flush=True)  # → state/daemon.log
     storage.init_home(home)
     pidfile = os.path.join(home, "daemon.pid")
     ready = os.path.join(home, "daemon.ready")
@@ -75,7 +86,8 @@ async def amain(home: str) -> int:
         home=home, runner=wechat_runner,
         on_token_expired=lambda: print("[wechat] Token 失效,渠道已暂停;请重新扫码绑定"),
         ledger_append=lambda kind, owner, payload: led.append(kind, owner, payload),
-        cas=led.cas)  # W3:媒体解密后入档(assets/blobs,>64MB 走 K.7 旁路)
+        cas=led.cas,  # W3:媒体解密后入档(assets/blobs,>64MB 走 K.7 旁路)
+        **wechat_media_options(creds))  # W3.5:图片内容识别(best-effort,dashscope 缺席则关闭)
     gateway.attach_wechat(wechat)
 
     port = int(os.environ.get("NAGA_WS_PORT", str(WS_PORT)))  # 0 = 临时端口(测试/并行)
@@ -85,6 +97,7 @@ async def amain(home: str) -> int:
     if cred is not None and not wechat.is_running:
         wechat.start(cred)
     await asyncio.to_thread(_write_marker, ready, f"{os.getpid()} {port}")
+    print(f"[daemon] ready pid={os.getpid()} port={port}", flush=True)
 
     stop = asyncio.Event()
 
@@ -96,6 +109,7 @@ async def amain(home: str) -> int:
     await stop.wait()
 
     wechat.stop()
+    print("[daemon] stopping", flush=True)
 
     async def _cleanup() -> None:
         await gateway.stop()

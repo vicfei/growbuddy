@@ -38,6 +38,7 @@ WECHAT_TYPING_TICKET_TTL_SEC = 540.0  # spec-constants wechat_typing_ticket_ttl_
 WECHAT_REPLY_CHUNK_CHARS = 1900      # spec-constants wechat_reply_chunk_chars(单条 ~2000 余量)
 WECHAT_CDN_BASE = "https://novac2c.cdn.weixin.qq.com/c2c"  # 固定基址——URL 自构,SSRF 免疫
 WECHAT_MEDIA_MAX_BYTES = 20_971_520  # spec-constants wechat_media_max_bytes(超限拒收;K.7 分层属 M3)
+WECHAT_MEDIA_DOWNLOAD_TIMEOUT_SEC = 240.0  # 候选 wechat_media_download_timeout_sec(逐读超时防不了慢滴流,须总额限)
 
 # 请求函数:(url, method, headers, json_body|None, timeout_sec) -> (status, parsed_json)
 RequestFn = Callable[[str, str, dict[str, str], dict[str, Any] | None, float],
@@ -443,7 +444,9 @@ class WeChatChannel:
                  typing_refresh_sec: float = WECHAT_TYPING_REFRESH_SEC,
                  typing_ticket_ttl_sec: float = WECHAT_TYPING_TICKET_TTL_SEC,
                  media_fetch: MediaFetch = _httpx_media_fetch,
-                 cas: CAS | None = None):
+                 cas: CAS | None = None,
+                 media_timeout_sec: float = WECHAT_MEDIA_DOWNLOAD_TIMEOUT_SEC,
+                 vision_describe: Callable[[bytes], Awaitable[str | None]] | None = None):
         self._home = home
         self._runner = runner
         self._request = request
@@ -463,6 +466,8 @@ class WeChatChannel:
         self._typing_ttl = typing_ticket_ttl_sec
         self._media_fetch = media_fetch
         self._cas = cas
+        self._media_timeout_sec = media_timeout_sec
+        self._vision_describe = vision_describe
 
     @property
     def is_running(self) -> bool:
@@ -543,7 +548,11 @@ class WeChatChannel:
         goal = text.strip() if isinstance(text, str) and text.strip() else None
         media = extract_media(update) if goal is None else None  # 文本分支优先(语音转写同)
         if goal is None and media is None:
+            self._log(f"msg {from_user[:12]}… -> drop(无可提取内容)")
             return
+        self._log(f"msg {from_user[:12]}… -> {'text' if goal is not None else 'media'}")
+        if os.environ.get("NAGA_WECHAT_DEBUG", "") == "1":  # 逆向契约观测缝(截 4096)
+            self._log("raw: " + json.dumps(update, ensure_ascii=False)[:4096])
         token = update.get("context_token")
         if isinstance(token, str) and token:
             self._remember_token(from_user, token)
@@ -566,29 +575,58 @@ class WeChatChannel:
                             actor: dict[str, str], ctx: dict[str, str],
                             context_token: str | None) -> None:
         """媒体落地:CDN 下载(固定基址,SSRF 免疫)→ AES 解密 → CAS 入档 →
-        以档案引用文案入 lane;失败降级文案(不静默丢)。"""
+        (图片)内容识别 → 以档案引用文案入 lane。typing 覆盖全程——下载再慢
+        对端也看得到「正在输入」(W3 实证:跨境慢滴流可拖数分钟);失败降级
+        文案(不静默丢)。"""
         label = "图片" if media.kind == "image" else "文件"
+        typing = self._begin_typing(actor["id"], context_token)
+        try:
+            goal = await self._media_goal(media, label)
+            await self._runner(goal, session_key, actor, ctx)
+        finally:
+            await typing.stop()
+
+    async def _media_goal(self, media: MediaPayload, label: str) -> str:
         try:
             blob = await self._download_media(media)
-            if self._cas is None:
-                goal = (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B);"
-                        f"未配置 CAS 存储,内容未存档")
-            else:
-                cas_id = self._cas.put(media_cas_object(media.kind, media.file_name, blob))
-                goal = (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B),"
-                        f"已解密存档 CAS {cas_id[7:23]}…;内容为二进制,需要时可引用该档案说明")
         except Exception as err:  # noqa: BLE001 —— 媒体失败降级文案,不上抛杀消息处理
-            goal = f"[{label}] {media.file_name} 接收失败({str(err)[:80]})——请重发或改用文字描述"
-        await self._run_with_typing(goal, session_key, actor, ctx, context_token)
+            self._log(f"media 失败 {media.file_name}: {str(err)[:120]}")
+            return f"[{label}] {media.file_name} 接收失败({str(err)[:80]})——请重发或改用文字描述"
+        if self._cas is None:
+            return (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B);"
+                    f"未配置 CAS 存储,内容未存档")
+        cas_id = self._cas.put(media_cas_object(media.kind, media.file_name, blob))
+        self._log(f"media 存档 {media.file_name} {len(blob)}B cas={cas_id[:23]}…")
+        base = (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B),"
+                f"已解密存档 CAS {cas_id[7:23]}…")
+        if media.kind == "image" and self._vision_describe is not None:
+            try:
+                desc = await self._vision_describe(blob)  # best-effort:失败退回纯存档文案
+            except Exception:  # noqa: BLE001
+                desc = None
+            if desc:
+                self._log(f"media 识别 {media.file_name}: {desc[:60]}")
+                return f"{base};图像内容:{desc}"
+        return f"{base};内容为二进制,需要时可引用该档案说明"
 
     async def _download_media(self, media: MediaPayload) -> bytes:
-        status, body = await self._media_fetch(cdn_download_url(media.encrypt_query_param))
+        url = cdn_download_url(media.encrypt_query_param)
+        try:
+            status, body = await asyncio.wait_for(self._media_fetch(url),
+                                                  self._media_timeout_sec)
+        except TimeoutError:
+            raise ValueError(f"下载超时({self._media_timeout_sec:.0f}s)") from None
         if status != 200:
             raise ValueError(f"CDN HTTP {status}")
         if len(body) > WECHAT_MEDIA_MAX_BYTES:
             raise ValueError(
                 f"密文 {len(body)}B 超 wechat_media_max_bytes={WECHAT_MEDIA_MAX_BYTES}B 上限")
         return decrypt_ilink_media(body, media.aes_key)
+
+    @staticmethod
+    def _log(message: str) -> None:
+        # 观测缝:daemon stdout(state/daemon.log);peer/密钥等敏感字段不落
+        print(f"[wechat] {message}", flush=True)
 
     async def _run_with_typing(self, goal: str, session_key: str,
                                actor: dict[str, str], ctx: dict[str, str],
