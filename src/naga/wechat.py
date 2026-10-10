@@ -590,8 +590,9 @@ class WeChatChannel:
         try:
             blob = await self._download_media(media)
         except Exception as err:  # noqa: BLE001 —— 媒体失败降级文案,不上抛杀消息处理
-            self._log(f"media 失败 {media.file_name}: {str(err)[:120]}")
-            return f"[{label}] {media.file_name} 接收失败({str(err)[:80]})——请重发或改用文字描述"
+            detail = str(err) or type(err).__name__  # 空串异常(裸 Timeout/OSError)至少留类型名
+            self._log(f"media 失败 {media.file_name}: {detail[:120]}")
+            return f"[{label}] {media.file_name} 接收失败({detail[:80]})——请重发或改用文字描述"
         if self._cas is None:
             return (f"[{label}] 用户发来{label} {media.file_name}({len(blob)}B);"
                     f"未配置 CAS 存储,内容未存档")
@@ -705,7 +706,9 @@ class WeChatChannel:
     @staticmethod
     def _log_task_failure(task: asyncio.Task[None]) -> None:
         if not task.cancelled() and task.exception() is not None:
-            print(f"[wechat] 消息处理异常: {str(task.exception())[:100]}")
+            err = task.exception()
+            detail = str(err) or type(err).__name__  # 空串异常至少留类型名
+            print(f"[wechat] 消息处理异常: {detail[:100]}")
 
 
 class _TypingHandle:
