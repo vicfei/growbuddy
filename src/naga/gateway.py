@@ -355,6 +355,7 @@ class Gateway:
         """会话内执行一次 AgentLoop(渠道 runner 复用;结果事件由调用方处理)。
 
         §10.1 信任级策略单点:预算封顶 + guest R0 工具过滤 + untrusted 拒绝。
+        工具集与预算树经 SubAgentSpawner 装配(M3-1:派生授权代数单点)。
         """
         budget = task_budget(actor_trust, budget)
         if budget <= 0:
@@ -363,10 +364,16 @@ class Gateway:
                        "——请联系 owner 完成绑定或升级信任级"),
                 outcome="rejected", trace_id=trace_id, steps=0, tokens=0, cost_cents=0)
         kern = kernel.Kernel(ledger=cast("kernel.Ledger", self._ledger))  # 鸭子类型
+        from naga.spawner import SubAgentSpawner  # 局部导入:spawner 依赖本模块,避免环
+
+        spawner = SubAgentSpawner(
+            ledger=self._ledger, ctx=kern.root, make_adapter=self._make_adapter,
+            raw_tools=self._tools, skill_store=SkillStore(self._ledger),
+            session_key=session_key, actor_trust=actor_trust,
+            budget=kernel.Budget(budget), depth=0, parent_trace=trace_id)
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
-                         budget=kernel.Budget(budget),
-                         adapter=self._make_adapter(),
-                         tools=tools_for_trust(actor_trust, self._tools),
+                         budget=spawner.budget,
+                         adapter=self._make_adapter(), tools=spawner.make_tools(),
                          skill_store=SkillStore(self._ledger),
                          session_key=session_key, trace_id=trace_id,
                          actor_trust=actor_trust)

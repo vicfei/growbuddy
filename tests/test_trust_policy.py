@@ -151,7 +151,8 @@ def test_run_agent_guest_tool_filter_reaches_loop(tmp_path):
 
     asyncio.run(scenario())
     assert seen[0] == ["web_search"]   # guest:写类工具不可见
-    assert seen[1] == ["web_search", "send_mail"]
+    # owner 自 M3-1 起额外可见派生工具(授权代数单点装配)
+    assert seen[1] == ["web_search", "send_mail", "spawn_subagents"]
     led.close()
 
 
