@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "naga"
 version = "0.1.0"
-description = "Samsara L0 kernel - Python route (Naga)"
+description = "Self-evolving AI agent runtime: RSI under tiered authority, reversible ledger, capability security, crash-contained plugins"
 requires-python = ">=3.12"  # type 语句(递归类型别名)依赖 3.12;本机与 CI 均为 3.12
 dependencies = [
   "zstandard>=0.23",  # 快照 tar.zst(数据模型 §3.2);>=0.23 含类型标注
