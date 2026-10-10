@@ -120,8 +120,9 @@ class AgentLoop:
 
             result: Any = await self._ctx.perform(f"tool:{name}", _apply, _noop_revert)
             ok = True
-        except (RuntimeError, ValueError) as err:
-            result = {"error": str(err)}
+        except Exception as err:  # noqa: BLE001 —— 工具失败=ok=False 步(K.1),
+            # 不得杀死任务:网络错/worker 崩溃/参数错一律降级续跑(出口③前提)
+            result = {"error": f"{type(err).__name__}: {err}"}
             ok = False
         return result, ok, int((time.monotonic() - t0) * 1000)
 

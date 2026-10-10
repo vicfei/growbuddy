@@ -61,12 +61,16 @@ async def amain(home: str) -> int:
     led = DurableLedger.open(home)
     _write_marker(pidfile, str(os.getpid()))
 
-    creds = CredentialStore(os.path.join(home, "credentials", "providers.json"))
+    providers_path = os.path.join(home, "credentials", "providers.json")
+    creds = CredentialStore(providers_path)
     adapter = DeepSeekAdapter.from_credentials(creds)
     tools: list[Any] = []
     if creds.has("bocha"):
+        # K.3(M2 行):外部来源插件一律入子进程——元数据在父进程,执行在 worker
         from naga.tools import WebSearchTool
-        tools.append(WebSearchTool(creds))
+        from naga.worker import WorkerTool
+
+        tools.append(WorkerTool.of(WebSearchTool, providers_path=providers_path))
     gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home)
 
     # 微信渠道:runner 经网关 lane(会话路由单一权威);guest 预算封顶(§10.1 首项)
@@ -118,6 +122,10 @@ async def amain(home: str) -> int:
 
     async def _cleanup() -> None:
         await gateway.stop()
+        for tool in tools:
+            aclose = getattr(tool, "aclose", None)
+            if aclose is not None:
+                await aclose()  # worker 子进程:关 stdin → EOF 自灭,超时强杀
         led.close()
 
     try:  # #39:清理超时兜底——SIGTERM 后卡死则强制退出,不让僵尸进程占口
