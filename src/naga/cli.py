@@ -64,10 +64,16 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         if pid is not None:
             _emit(args, {"daemon": "running", "pid": pid}, f"daemon: already running (pid {pid})")
             return 0  # 幂等
+        # stdout/stderr 落 home 内观测日志(0600):渠道/任务异常不再随 DEVNULL 丢失
+        log_path = os.path.join(home, "state", "daemon.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)  # state/ 按需创建
+        log_fh = open(log_path, "ab", buffering=0)  # noqa: SIM115 —— 句柄由子进程继承
+        os.chmod(log_path, 0o600)
         subprocess.Popen(
             [sys.executable, "-m", "naga.daemon", home],
             start_new_session=True, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdout=log_fh, stderr=subprocess.STDOUT)
+        log_fh.close()
         deadline = time.monotonic() + _WAIT_SEC
         while time.monotonic() < deadline:
             new_pid = _daemon_pid(home)

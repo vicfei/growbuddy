@@ -8,9 +8,11 @@ completion_tokens 全额计入预算;reasoning_content 不回传调用方。
 
 from __future__ import annotations
 
+import base64
 import json
 import os
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -129,3 +131,89 @@ class DeepSeekAdapter:
                         for c in raw_calls],
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)))
+
+
+# ── 图片内容识别(M2-W3.5:渠道媒体入 lane 前的 best-effort 描述)──────
+
+VISION_DESCRIBE_PROMPT = ("用不超过 120 字客观描述这张图片的内容(人物/文字/场景/数据各概括要点);"
+                          "若是纯文字截图,转述其中的关键文字。")
+VISION_DESCRIBE_MAX_CHARS = 400  # 描述截断上限(防失控长文灌爆 goal)
+
+
+def sniff_image_mime(data: bytes) -> str:
+    """魔数嗅探(png/jpeg/webp/gif/bmp),兜底 jpeg。"""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"BM"):
+        return "image/bmp"
+    return "image/jpeg"
+
+
+# (url, headers, body) -> (status, parsed_json);注入供契约测试
+VisionRequest = Callable[..., Awaitable[tuple[int, Any]]]
+
+
+async def _httpx_post_json(url: str, headers: dict[str, str],
+                           body: dict[str, Any]) -> tuple[int, Any]:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(url, json=body, headers=headers)
+        try:
+            return resp.status_code, resp.json()
+        except ValueError:
+            return resp.status_code, {}
+
+
+class DashScopeVisionDescriber:
+    """dashscope qwen-vl 图片描述(best-effort:一切失败返回 None,不阻断媒体链)。"""
+
+    def __init__(self, config: ProviderConfig, model: str = "qwen-vl-plus",
+                 request: VisionRequest = _httpx_post_json, max_tokens: int = 512):
+        self._config = config
+        self._model = model
+        self._request = request
+        self._max_tokens = max_tokens
+
+    @classmethod
+    def from_credentials(cls, store: CredentialStore, provider: str = "dashscope",
+                         model: str = "qwen-vl-plus") -> DashScopeVisionDescriber:
+        return cls(store.provider(provider), model)
+
+    async def describe(self, image: bytes) -> str | None:
+        data_url = (f"data:{sniff_image_mime(image)};base64,"
+                    + base64.b64encode(image).decode())
+        body: dict[str, Any] = {
+            "model": self._model, "max_tokens": self._max_tokens,
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "text", "text": VISION_DESCRIBE_PROMPT}]}]}
+        try:
+            status, raw = await self._request(
+                self._config.base_url + "/chat/completions",
+                {"Authorization": "Bearer " + self._config.api_key,
+                 "Content-Type": "application/json"}, body)
+        except (httpx.HTTPError, OSError, ValueError):
+            return None
+        if status != 200 or not isinstance(raw, dict):
+            return None
+        data = cast("dict[str, Any]", raw)
+        choices_any: Any = data.get("choices")
+        if not isinstance(choices_any, list) or not choices_any:
+            return None
+        choices = cast("list[Any]", choices_any)
+        if not isinstance(choices[0], dict):
+            return None
+        choice = cast("dict[str, Any]", choices[0])
+        msg_any: Any = choice.get("message")
+        if not isinstance(msg_any, dict):
+            return None
+        message = cast("dict[str, Any]", msg_any)
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return None
+        return content.strip()[:VISION_DESCRIBE_MAX_CHARS]

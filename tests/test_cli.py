@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from naga import storage
 from naga.ledger_store import DurableLedger
@@ -33,6 +34,20 @@ def test_daemon_lifecycle_and_idempotency(tmp_path):
     finally:
         os.environ.pop("NAGA_WS_PORT", None)
     assert json.loads(r.stdout)["daemon"] == "started"
+
+    # 观测日志(W3.5):stdout 落 state/daemon.log(0600),含 ready 行
+    log_path = os.path.join(home, "state", "daemon.log")
+    deadline = time.monotonic() + 5
+    logged = ""
+    while time.monotonic() < deadline:
+        if os.path.exists(log_path):
+            with open(log_path, encoding="utf-8") as fh:
+                logged = fh.read()
+            if "[daemon] ready" in logged:
+                break
+        time.sleep(0.1)
+    assert "[daemon] ready" in logged, logged
+    assert (os.stat(log_path).st_mode & 0o777) == 0o600
 
     r = _cli(home, "--json", "daemon", "start")  # 幂等
     assert r.returncode == 0 and json.loads(r.stdout)["daemon"] == "running"
