@@ -275,8 +275,8 @@ def test_write_capture_overhead_slo_100_sessions(tmp_path):
     overhead = captured_best / direct_best - 1
     print(f"\n[write-capture SLO] captured={captured_best:.3f}s "
           f"direct={direct_best:.3f}s overhead={overhead:.1%} "
-          f"({sessions} sessions x {keys_per} skills x 8KB, best of 3, "
-          f"session-shaped amortization)")
+          f"({sessions} sessions x {keys_per} skills x 8KB, best of 5, "
+          f"alternating order)")
     assert overhead <= WRITE_CAPTURE_OVERHEAD_SLO, (
         f"写捕获开销 {overhead:.1%} 超 K.2 SLO {WRITE_CAPTURE_OVERHEAD_SLO:.0%}")
 
