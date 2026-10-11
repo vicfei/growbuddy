@@ -14,7 +14,7 @@ from naga import storage
 from naga.gateway import Gateway
 from naga.ledger_store import DurableLedger
 from naga.llm import ChatResponse
-from naga.wechat import WeChatChannel, WeChatCredential, load_credential
+from naga.wechat import WeChatChannel, WeChatCredential, load_bindings
 from naga.worker import WorkerTool
 
 _ENV = {"NAGA_WORKER_TEST_TOOLS": "1"}
@@ -267,15 +267,15 @@ def test_unbind_then_rebind_hot_cycle(tmp_path):
                 async with s.get(f"http://127.0.0.1:{port}/wechat/unbind") as r:
                     assert (await r.json())["ok"] is True
                 assert not ch.is_running                   # 解绑即停
-                assert load_credential(home) is None
+                assert load_bindings(home) == {}
                 async with s.get(f"http://127.0.0.1:{port}/wechat/bind/start") as r:
                     assert (await r.json())["qrcode"] == "Q2"
                 async with s.get(f"http://127.0.0.1:{port}/wechat/bind/poll/Q2") as r:
                     assert (await r.json())["status"] == "confirmed"
                 assert ch.is_running                       # 第二轮热启动
                 assert ch._cursor is None                  # 游标重置(新 bot)
-                cred = load_credential(home)
-                assert cred is not None and cred.bot_token == "bt-2"
+                bindings = load_bindings(home)
+                assert list(bindings) == ["iu-2"] and bindings["iu-2"].bot_token == "bt-2"
         finally:
             ch.stop()
             await gw.stop()

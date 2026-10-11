@@ -185,6 +185,8 @@ class Gateway:
         self._home = home
         self._wechat_request = wechat_request
         self._wechat: Any | None = None  # WeChatChannel(attach_wechat 注入,避免循环依赖)
+        self._wechat_channels: dict[str, Any] = {}  # binder → 渠道(多绑定并行)
+        self._wechat_factory: Callable[[Any], Any] | None = None  # 每凭据建渠道(daemon 注入)
         self._n_lanes = min(os.cpu_count() or 1, LANE_MAX_COUNT)
         self._queues: list[asyncio.Queue[dict[str, Any]]] = [
             asyncio.Queue() for _ in range(self._n_lanes)]
@@ -196,8 +198,12 @@ class Gateway:
         self.port: int = 0
 
     def attach_wechat(self, channel: Any) -> None:
-        """注入微信渠道实例(绑定管理面操作它;daemon 接线时调用)。"""
+        """注入微信渠道实例(兼容单渠道形态;绑定管理面操作它)。"""
         self._wechat = channel
+
+    def attach_wechat_factory(self, factory: Callable[[Any], Any]) -> None:
+        """注入渠道工厂(多绑定形态):每份凭据一个专属渠道实例。"""
+        self._wechat_factory = factory
 
     # ---- 生命周期 ----
     async def start(self, host: str = "127.0.0.1", port: int = WS_PORT) -> int:
@@ -459,7 +465,7 @@ class Gateway:
 
     async def _wechat_bind_poll(self, request: web.Request) -> web.Response:
         from naga.trust import derive_trust, grant_trust
-        from naga.wechat import ILinkClient, WeChatCredential, save_credential
+        from naga.wechat import ILinkClient, WeChatCredential, save_binding
         qrcode = request.match_info["qrcode"]
         req = self._wechat_request
         status = await (ILinkClient.poll_binding_status(qrcode, req) if req is not None
@@ -472,7 +478,7 @@ class Gateway:
             ilink_user_id=status.ilink_user_id,
             baseurl=status.baseurl,
             bound_at=datetime.datetime.now(datetime.UTC).isoformat())
-        await asyncio.to_thread(save_credential, cred, home)
+        binder = await asyncio.to_thread(save_binding, cred, home)
         # 扫码绑定者自动授 owner(T3 配对审批的运行时形态;已有 allowlist 不覆盖)
         trust_file = os.path.join(home, "trust.json")
         if status.ilink_user_id:
@@ -483,35 +489,81 @@ class Gateway:
                                 note="QR 绑定自动授予", path=trust_file)
             await asyncio.to_thread(_grant)
         self._ledger.append("channel.bound", "root", {
-            "channel": "wechat",
+            "channel": "wechat", "binder": binder,
             "ilink_user_id": status.ilink_user_id,
             "baseurl": status.baseurl})
-        # 热启动:绑定确认即启动消息长轮询(无需重启守护;鸭子检查,可注入测试替身)
-        ch = self._wechat
-        if ch is not None and not ch.is_running:
-            ch.start(cred)
-        return web.json_response({"ok": True, "status": "confirmed",
+        # 热启动:绑定确认即启动该绑定专属的消息长轮询(多绑定=多渠道并行;
+        # 同 binder 重绑=先停旧渠道;无工厂时回落单渠道兼容形态)
+        await self._start_binding_channel(binder, cred)
+        return web.json_response({"ok": True, "status": "confirmed", "binder": binder,
                                   "message": "绑定成功,消息通道已启动(无需重启)"})
 
-    async def _wechat_status(self, _request: web.Request) -> web.Response:
-        from naga.wechat import load_credential
-        home = self._home or storage.resolve_home()
-        cred = await asyncio.to_thread(load_credential, home)
-        ch = self._wechat
-        return web.json_response({
-            "ok": True, "bound": cred is not None,
-            "bound_at": cred.bound_at if cred else None,
-            "polling": bool(getattr(ch, "is_running", False))})
+    async def start_binding_channel(self, binder: str, cred: Any) -> None:
+        """(公共)启动/替换某绑定的渠道(daemon 启动存量绑定时调用)。"""
+        await self._start_binding_channel(binder, cred)
 
-    async def _wechat_unbind(self, _request: web.Request) -> web.Response:
-        from naga.wechat import clear_credential
+    def register_binding_channel(self, binder: str, channel: Any) -> None:
+        """(公共)登记已有渠道到绑定(如 daemon 的首绑定复用)。"""
+        self._wechat_channels[binder] = channel
+
+    @property
+    def wechat_channels(self) -> dict[str, Any]:
+        return dict(self._wechat_channels)
+
+    async def _start_binding_channel(self, binder: str, cred: Any) -> None:
+        old = self._wechat_channels.get(binder)
+        if old is not None and getattr(old, "is_running", False):
+            old.stop()  # 同绑定者重绑:先停旧轮询(新 token 接管)
+        if self._wechat_factory is not None:
+            ch = self._wechat_factory(cred)
+            if ch is not None and not getattr(ch, "is_running", False):
+                ch.start(cred)
+            self._wechat_channels[binder] = ch
+        else:
+            ch = self._wechat  # 兼容形态:单渠道替身(既有测试)
+            if ch is not None and not getattr(ch, "is_running", False):
+                ch.start(cred)
+
+    async def _wechat_status(self, _request: web.Request) -> web.Response:
+        from naga.wechat import load_bindings
         home = self._home or storage.resolve_home()
-        await asyncio.to_thread(clear_credential, home)
-        ch = self._wechat
+        bindings = await asyncio.to_thread(load_bindings, home)
+        entries: list[dict[str, Any]] = []
+        for binder, cred in bindings.items():
+            ch = self._wechat_channels.get(binder, self._wechat)
+            entries.append({"binder": binder, "bound_at": cred.bound_at,
+                            "polling": bool(getattr(ch, "is_running", False))})
+        return web.json_response({
+            "ok": True,
+            "bound": bool(entries),                       # 兼容:任一绑定在
+            "polling": any(e["polling"] for e in entries) or
+                       bool(getattr(self._wechat, "is_running", False)),
+            "bindings": entries})
+
+    async def _wechat_unbind(self, request: web.Request) -> web.Response:
+        from naga.wechat import clear_credential, remove_binding
+        home = self._home or storage.resolve_home()
+        binder = request.query.get("binder")
+        if binder is None:
+            await asyncio.to_thread(clear_credential, home)  # 全量解绑(兼容旧语义)
+            for ch in self._wechat_channels.values():
+                ch.stop()
+            self._wechat_channels.clear()
+            if self._wechat is not None:
+                self._wechat.stop()
+            self._ledger.append("channel.unbound", "root",
+                                {"channel": "wechat", "binder": None})
+            return web.json_response({"ok": True, "message": "已全部解绑"})
+        await asyncio.to_thread(remove_binding, binder, home)
+        ch = self._wechat_channels.pop(binder, None)
         if ch is not None:
             ch.stop()
-        self._ledger.append("channel.unbound", "root", {"channel": "wechat"})
-        return web.json_response({"ok": True, "message": "已解绑"})
+        self._ledger.append("channel.unbound", "root",
+                            {"channel": "wechat", "binder": binder})
+        from naga.wechat import load_bindings
+        remaining = len(await asyncio.to_thread(load_bindings, home))
+        return web.json_response({"ok": True, "message": f"已解绑 {binder}",
+                                  "remaining": remaining})
 
 
 class GatewayError(Exception):

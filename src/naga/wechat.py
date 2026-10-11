@@ -237,13 +237,68 @@ def credential_path(home: str) -> str:
     return os.path.join(home, "credentials", "wechat-ilink.json")
 
 
-def state_path(home: str) -> str:
-    return os.path.join(home, "state", "wechat-ilink-state.json")
+def bindings_path(home: str) -> str:
+    """多绑定仓(按绑定者 ilink_user_id 键控;0600)。"""
+    return os.path.join(home, "credentials", "wechat-ilinks.json")
+
+
+def binder_key(cred: WeChatCredential) -> str:
+    return cred.ilink_user_id or "legacy"
+
+
+def load_bindings(home: str) -> dict[str, WeChatCredential]:
+    """读全部绑定;吸收旧单文件(W1-W3 形态)为一条迁移条目。"""
+    bindings: dict[str, WeChatCredential] = {}
+    try:
+        with open(bindings_path(home), encoding="utf-8") as fh:
+            raw_data: Any = json.load(fh)
+        data = cast("dict[str, Any]", raw_data if isinstance(raw_data, dict) else {})
+        for key, raw in data.items():
+            if isinstance(raw, dict):
+                cred = WeChatCredential.model_validate(raw)
+                if cred.bot_token:
+                    bindings[str(key)] = cred
+    except (OSError, ValueError):
+        pass
+    legacy = load_credential(home)
+    if legacy is not None:
+        bindings.setdefault(binder_key(legacy), legacy)
+    return bindings
+
+
+def save_binding(cred: WeChatCredential, home: str) -> str:
+    """保存/替换一条绑定(同 binder 覆盖);返回 binder 键。"""
+    key = binder_key(cred)
+    bindings = load_bindings(home)
+    if key != "legacy":
+        bindings.pop("legacy", None)  # 具名绑定落地后清除迁移占位
+    bindings[key] = cred
+    os.makedirs(os.path.dirname(bindings_path(home)), exist_ok=True)
+    _write_private(bindings_path(home),
+                   json.dumps({k: c.model_dump() for k, c in bindings.items()},
+                              ensure_ascii=False, indent=2))
+    return key
+
+
+def remove_binding(binder: str, home: str) -> None:
+    bindings = load_bindings(home)
+    if binder in bindings:
+        del bindings[binder]
+        os.makedirs(os.path.dirname(bindings_path(home)), exist_ok=True)
+        _write_private(bindings_path(home),
+                       json.dumps({k: c.model_dump() for k, c in bindings.items()},
+                                  ensure_ascii=False, indent=2))
 
 
 def save_credential(cred: WeChatCredential, home: str) -> None:
+    """兼容旧 API(单绑定时代):落多绑定仓一条。"""
     os.makedirs(os.path.dirname(credential_path(home)), exist_ok=True)
     _write_private(credential_path(home), cred.model_dump_json(indent=2))
+    save_binding(cred, home)
+
+
+def state_path(home: str) -> str:
+    return os.path.join(home, "state", "wechat-ilink-state.json")
 
 
 def load_credential(home: str) -> WeChatCredential | None:
@@ -255,10 +310,19 @@ def load_credential(home: str) -> WeChatCredential | None:
         return None
 
 
+def clear_bindings(home: str) -> None:
+    """全部解绑(整仓清空)。"""
+    p = bindings_path(home)
+    if os.path.exists(p):
+        _write_private(p, "{}")
+
+
 def clear_credential(home: str) -> None:
+    """兼容旧 API:全量解绑语义(单文件+多绑定仓一并清空)。"""
     p = credential_path(home)
     if os.path.exists(p):
         _write_private(p, "{}")
+    clear_bindings(home)
 
 
 def load_state(home: str) -> WeChatChannelState:

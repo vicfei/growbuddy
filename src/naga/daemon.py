@@ -74,39 +74,62 @@ async def amain(home: str) -> int:
     gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home)
 
     # 微信渠道:runner 经网关 lane(会话路由单一权威);guest 预算封顶(§10.1 首项)
-    from naga.wechat import WeChatChannel, load_credential
+    from naga.wechat import WeChatChannel
 
-    async def wechat_runner(goal: str, session_key: str,
-                            actor: dict[str, str], _ctx: dict[str, str]) -> None:
-        trace_id = "tr_" + uuid.uuid4().hex[:24]
-        result = await gateway.run_agent(session_key=session_key, goal=goal,
-                                         budget=OWNER_TASK_BASE_BUDGET,
-                                         trace_id=trace_id,
-                                         actor_trust=actor["trust"])
-        peer = session_key.split(":", 2)[2] if session_key.count(":") >= 2 else session_key
-        await wechat.send_reply(peer, reply_for(result), None)
-        event = "agent.completed" if result.outcome == "success" else "agent.failed"
-        await gateway.broadcast(event, {
-            "session_key": session_key, "trace_id": trace_id, "reply": result.reply,
-            "outcome": result.outcome, "tokens": result.tokens,
-            "failure_analysis": result.failure_analysis})
+    def make_wechat_channel(_cred: Any = None) -> WeChatChannel:
+        """每份绑定凭据一个专属渠道(多绑定并行;runner 闭包绑定自己的渠道)。"""
+        box: dict[str, WeChatChannel] = {}
 
-    wechat = WeChatChannel(
-        home=home, runner=wechat_runner,
-        on_token_expired=lambda: print("[wechat] Token 失效,渠道已暂停;请重新扫码绑定"),
-        ledger_append=lambda kind, owner, payload: led.append(kind, owner, payload),
-        cas=led.cas,  # W3:媒体解密后入档(assets/blobs,>64MB 走 K.7 旁路)
-        **wechat_media_options(creds))  # W3.5:图片内容识别(best-effort,dashscope 缺席则关闭)
-    gateway.attach_wechat(wechat)
+        async def runner(goal: str, session_key: str,
+                         actor: dict[str, str], _ctx: dict[str, str]) -> None:
+            trace_id = "tr_" + uuid.uuid4().hex[:24]
+            result = await gateway.run_agent(session_key=session_key, goal=goal,
+                                             budget=OWNER_TASK_BASE_BUDGET,
+                                             trace_id=trace_id,
+                                             actor_trust=actor["trust"])
+            peer = (session_key.split(":", 2)[2]
+                    if session_key.count(":") >= 2 else session_key)
+            ch = box.get("ch")
+            if ch is not None:
+                await ch.send_reply(peer, reply_for(result), None)
+            event = "agent.completed" if result.outcome == "success" else "agent.failed"
+            await gateway.broadcast(event, {
+                "session_key": session_key, "trace_id": trace_id, "reply": result.reply,
+                "outcome": result.outcome, "tokens": result.tokens,
+                "failure_analysis": result.failure_analysis})
+
+        ch = WeChatChannel(
+            home=home, runner=runner,
+            on_token_expired=lambda: print("[wechat] Token 失效,渠道已暂停;请重新扫码绑定"),
+            ledger_append=lambda kind, owner, payload: led.append(kind, owner, payload),
+            cas=led.cas,  # W3:媒体解密后入档(assets/blobs,>64MB 走 K.7 旁路)
+            **wechat_media_options(creds))  # W3.5:图片内容识别(best-effort)
+        box["ch"] = ch
+        return ch
+
+    first_channel = make_wechat_channel()
+    gateway.attach_wechat(first_channel)          # 兼容单渠道形态(首绑定)
+    gateway.attach_wechat_factory(make_wechat_channel)  # 多绑定:每凭据专属渠道
 
     port = int(os.environ.get("NAGA_WS_PORT", str(WS_PORT)))  # 0 = 临时端口(测试/并行)
     port = await gateway.start("127.0.0.1", port)
 
-    cred = load_credential(home)  # 已绑定则随守护启动(未绑定等热启动)
-    if cred is not None and not wechat.is_running:
-        wechat.start(cred)
+    # 已有绑定全部随守护启动(未绑定等热启动;多绑定=多渠道并行轮询)
+    from naga.wechat import load_bindings
+
+    bindings = await asyncio.to_thread(load_bindings, home)
+    first = True
+    for binder, cred in bindings.items():
+        if first:  # 首绑定复用已接线渠道,避免多余实例
+            if not first_channel.is_running:
+                first_channel.start(cred)
+            gateway.register_binding_channel(binder, first_channel)
+            first = False
+        else:
+            await gateway.start_binding_channel(binder, cred)
     await asyncio.to_thread(_write_marker, ready, f"{os.getpid()} {port}")
-    print(f"[daemon] ready pid={os.getpid()} port={port}", flush=True)
+    print(f"[daemon] ready pid={os.getpid()} port={port} "
+          f"bindings={len(bindings)}", flush=True)
 
     stop = asyncio.Event()
 
@@ -117,7 +140,9 @@ async def amain(home: str) -> int:
     loop.add_signal_handler(signal.SIGTERM, _on_term)
     await stop.wait()
 
-    wechat.stop()
+    first_channel.stop()
+    for ch in gateway.wechat_channels.values():
+        ch.stop()
     print("[daemon] stopping", flush=True)
 
     async def _cleanup() -> None:

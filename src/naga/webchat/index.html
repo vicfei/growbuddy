@@ -24,6 +24,11 @@
   #wxUnbind { margin-left: .8rem; color: #c0392b; border: 1px solid #c0392b; background: #fff;
               padding: .4rem 1rem; border-radius: 6px; cursor: pointer; }
   #wxState { margin-left: .8rem; font-size: .9rem; color: #888; }
+  .wx-binding { display: flex; align-items: center; gap: .6rem; margin-top: .5rem;
+                font-size: .9rem; color: #444; }
+  .wx-binding button { color: #c0392b; border: 1px solid #c0392b; background: #fff;
+                       padding: .15rem .6rem; border-radius: 6px; cursor: pointer;
+                       font-size: .8rem; }
 </style>
 </head>
 <body>
@@ -36,8 +41,8 @@
 
 <div class="wx">
   <button id="wxBtn" onclick="wxBind()">📱 绑定微信</button>
-  <button id="wxUnbind" style="display:none" onclick="wxUnbind()">解绑微信</button>
   <span id="wxState"></span>
+  <div id="wxBindings"></div>
   <div id="wxBox" style="display:none">
     <h4>微信扫码绑定</h4>
     <div><img id="wxQr" alt="绑定二维码"></div>
@@ -88,29 +93,41 @@ function send() {
   return false;
 }
 
-/* ── 微信扫码绑定(二维码本地渲染,内嵌显示;页面自动长轮询) ── */
+/* ── 微信扫码绑定(多绑定:可重复发起;每个绑定者可单独解绑) ── */
 const wxBtn = document.getElementById("wxBtn");
-const wxUnbindBtn = document.getElementById("wxUnbind");
 const wxStateEl = document.getElementById("wxState");
+const wxBindingsEl = document.getElementById("wxBindings");
 const wxBox = document.getElementById("wxBox");
 const wxPollEl = document.getElementById("wxPoll");
 let wxPolling = false;
 
+function esc(s) {
+  const d = document.createElement("span");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
 async function wxCheck() {
   try {
     const j = await (await fetch("/wechat/status")).json();
-    if (j.bound) {
-      wxStateEl.textContent = "✓ 微信已绑定";
-      wxStateEl.style.color = "#07c160";
-      wxBtn.style.display = "none";
-      wxUnbindBtn.style.display = "";
-      wxBox.style.display = "none";
-    } else {
-      wxStateEl.textContent = j.polling ? "已绑定?" : "未绑定";
-      wxStateEl.style.color = "#888";
-      wxBtn.style.display = "";
-      wxUnbindBtn.style.display = "none";
+    const items = j.bindings ?? [];
+    wxStateEl.textContent = items.length
+      ? `✓ 已绑定 ${items.length} 个微信` : "未绑定";
+    wxStateEl.style.color = items.length ? "#07c160" : "#888";
+    wxBindingsEl.innerHTML = "";
+    for (const b of items) {
+      const row = document.createElement("div");
+      row.className = "wx-binding";
+      const who = document.createElement("span");
+      who.innerHTML = (b.polling ? "🟢 " : "⚪ ")
+        + esc(b.binder.length > 18 ? b.binder.slice(0, 16) + "…" : b.binder);
+      const btn = document.createElement("button");
+      btn.textContent = "解绑";
+      btn.onclick = () => wxUnbindOne(b.binder);
+      row.append(who, btn);
+      wxBindingsEl.appendChild(row);
     }
+    if (!items.length) wxBox.style.display = "none";
   } catch (e) { wxStateEl.textContent = "状态查询失败"; }
 }
 
@@ -149,9 +166,9 @@ async function wxBind() {
   wxPolling = false;
 }
 
-async function wxUnbind() {
-  if (!confirm("确定解绑微信?消息通道将停止。")) return;
-  await fetch("/wechat/unbind");
+async function wxUnbindOne(binder) {
+  if (!confirm(`解绑 ${binder.slice(0, 16)}…?该绑定的消息通道将停止,其他绑定不受影响。`)) return;
+  await fetch("/wechat/unbind?binder=" + encodeURIComponent(binder));
   wxCheck();
 }
 
