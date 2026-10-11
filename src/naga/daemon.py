@@ -131,6 +131,52 @@ async def amain(home: str) -> int:
     print(f"[daemon] ready pid={os.getpid()} port={port} "
           f"bindings={len(bindings)}", flush=True)
 
+    # ── M4a-2:Curator 保鲜(启动扫一次 + 7 天周期;幂等)与晋升自动触发 ──
+    from naga.curator import Curator
+    from naga.promotion import (
+        PromotionPipeline,
+        ShadowVerifier,
+        auto_trigger_candidates,
+        goals_from_bundles,
+    )
+    from naga.skills import SkillStore
+
+    async def _curator_sweep() -> None:
+        report = await asyncio.to_thread(
+            Curator(ledger=led, skills=SkillStore(led)).sweep)
+        if report.changed:
+            print(f"[curator] stale={report.to_stale} "
+                  f"archived={report.to_archived}", flush=True)
+
+    promotion_pipeline = PromotionPipeline(
+        ledger=led, shadow=ShadowVerifier(ledger=led,
+                                          make_adapter=lambda: adapter))
+
+    async def _auto_promote(session_key: str) -> None:
+        """任务后钩子:局部技能 uses 达阈值 → 自动走晋升管道(影子对打+R 闸)。"""
+        try:
+            candidates = await asyncio.to_thread(
+                auto_trigger_candidates, led, session_key)
+            for name, uses in candidates:
+                print(f"[promotion] 自动触发: {name}(uses={uses})", flush=True)
+                goals = await asyncio.to_thread(
+                    goals_from_bundles, led, session_key=session_key)
+                await promotion_pipeline.promote(name, from_session=session_key,
+                                                 goals=goals)
+        except Exception as err:  # noqa: BLE001 —— 后台晋升不阻塞渠道任务
+            print(f"[promotion] 自动触发异常: {type(err).__name__}: {err}",
+                  flush=True)
+
+    gateway.on_task_done = _auto_promote  # run_agent 完成后回调(见 gateway)
+
+    async def _curator_loop() -> None:
+        await _curator_sweep()
+        while True:
+            await asyncio.sleep(7 * 24 * 3600)  # curator_cycle_days=7(§6.3)
+            await _curator_sweep()
+
+    curator_task = asyncio.create_task(_curator_loop())
+
     stop = asyncio.Event()
 
     def _on_term() -> None:
@@ -140,6 +186,7 @@ async def amain(home: str) -> int:
     loop.add_signal_handler(signal.SIGTERM, _on_term)
     await stop.wait()
 
+    curator_task.cancel()
     first_channel.stop()
     for ch in gateway.wechat_channels.values():
         ch.stop()

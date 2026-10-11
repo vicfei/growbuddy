@@ -120,6 +120,22 @@ class SkillStore:
             "ON s.name=m.name AND s.version=m.v AND s.branch=? AND s.status=? "
             "ORDER BY s.name", (branch, status, branch, status))
 
+    def set_status(self, name: str, status: str, *, branch: str = "main",
+                   reason: str = "", actor: str = "root") -> bool:
+        """状态迁移(active/stale/archived;Curator §6.3)。版本树全保留——
+        归档非删除,可恢复(INV-2);迁移事件入账(投影可重建)。"""
+        if status not in ("active", "stale", "archived"):
+            raise ValueError(f"非法状态: {status}")
+        row = self._latest_row(name, branch, None)
+        if row is None:
+            return False
+        self._ledger.execute(
+            "UPDATE skill_nodes SET status=? WHERE cas_id=?", (status, row[0]))
+        self._ledger.append(f"skill.{status}", actor,
+                            {"cas_id": row[0], "name": name,
+                             "branch": branch, "reason": reason})
+        return True
+
     def quarantine(self, name: str, reason: str, *, actor: str = "root",
                    branch: str = "main") -> str | None:
         row = self._latest_row(name, branch, None)

@@ -70,6 +70,12 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   未引入,当前仅信任级档位;③审批升档(R2 confirm/R3 审批队列/R4 双人复核)属模式系统(M4),
   映射表已按 R 级就位。
 
+## E'. 追加积压(M4a-2,2026-10-11)
+
+- **kind additive 2 条**:`skill.stale` / `skill.archived`(Curator §6.3 状态迁移入账;
+  归档非删除、可恢复 INV-2)。随下一批 RFC 一并裁决。
+- **spec-constants 候选 1 条**:`skill_promotion_trigger_uses=3`(自动晋升触发阈值,RFC 权威类)。
+
 ## E. 建议处置
 
 1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入
