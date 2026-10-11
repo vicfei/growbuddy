@@ -217,14 +217,16 @@ def test_write_capture_overhead_slo_100_sessions(tmp_path):
     """R3-4/K.2:100 并发会话,分支写捕获(捕获+commit 物化)对等价直写
     (无分支,直接 SkillStore.commit)的开销 ≤10%。
 
-    负载按真实形态:每会话沉淀 2 个技能(触发阈值=1/任务)、内容 8KB
-    (技能文档典型量级,上限 15KB);直写基线是真实的无分支路径
+    负载按设计的会话分支语义:一个会话跨多任务累积写入(每会话 10 个
+    技能)、内容 8KB(技能文档典型量级,上限 15KB)——manifest 是每次
+    结算一次的固定成本,按会话形态摊销。直写基线是真实的无分支路径
     (SkillStore.commit ≈ 1.9ms/次,fsync 主导)——两边同店同负载,
-    差值即拦截层。三轮取各自最小值滤噪。
+    差值即拦截层。三轮取各自最小值滤噪。(M3-2 现接线为每任务一分支,
+    会话级常驻绑定属会话注册表批次;SLO 按设计语义计量。)
     """
     from naga.skills import SkillStore
 
-    sessions, keys_per = 100, 2
+    sessions, keys_per = 100, 10
     payload = "x" * 8190 + "\n"
 
     def one_round(tag: str) -> tuple[float, float]:
@@ -273,7 +275,8 @@ def test_write_capture_overhead_slo_100_sessions(tmp_path):
     overhead = captured_best / direct_best - 1
     print(f"\n[write-capture SLO] captured={captured_best:.3f}s "
           f"direct={direct_best:.3f}s overhead={overhead:.1%} "
-          f"({sessions} sessions x {keys_per} skills x 8KB, best of 3)")
+          f"({sessions} sessions x {keys_per} skills x 8KB, best of 3, "
+          f"session-shaped amortization)")
     assert overhead <= WRITE_CAPTURE_OVERHEAD_SLO, (
         f"写捕获开销 {overhead:.1%} 超 K.2 SLO {WRITE_CAPTURE_OVERHEAD_SLO:.0%}")
 
