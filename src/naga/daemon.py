@@ -152,8 +152,12 @@ async def amain(home: str) -> int:
         ledger=led, shadow=ShadowVerifier(ledger=led,
                                           make_adapter=lambda: adapter))
 
+    last_task_ts = {"t": 0.0}
+
     async def _auto_promote(session_key: str) -> None:
         """任务后钩子:局部技能 uses 达阈值 → 自动走晋升管道(影子对打+R 闸)。"""
+        import time as _time
+        last_task_ts["t"] = _time.monotonic()
         try:
             candidates = await asyncio.to_thread(
                 auto_trigger_candidates, led, session_key)
@@ -177,6 +181,25 @@ async def amain(home: str) -> int:
 
     curator_task = asyncio.create_task(_curator_loop())
 
+    async def _gepa_loop() -> None:
+        import time as _time
+
+        from naga.gepa import GepaOptimizer
+        while True:
+            await asyncio.sleep(7 * 24 * 3600)  # gepa_cycle_days=7(§7.5)
+            if _time.monotonic() - last_task_ts["t"] < 2 * 3600:
+                continue  # curator_idle_hours=2:空闲窗口不足,顺延一周期
+            report = await GepaOptimizer(
+                ledger=led, make_adapter=lambda: adapter,
+                pipeline=promotion_pipeline).run_cycle()
+            print(f"[gepa] failures={report.failures_found} "
+                  f"clusters={report.clusters} proposals={report.proposals} "
+                  f"promoted={report.promoted} pending={report.pending_review} "
+                  f"rejected={report.rejected} tokens={report.tokens} "
+                  f"stopped={report.stopped_reason}", flush=True)
+
+    gepa_task = asyncio.create_task(_gepa_loop())
+
     stop = asyncio.Event()
 
     def _on_term() -> None:
@@ -187,6 +210,7 @@ async def amain(home: str) -> int:
     await stop.wait()
 
     curator_task.cancel()
+    gepa_task.cancel()
     first_channel.stop()
     for ch in gateway.wechat_channels.values():
         ch.stop()

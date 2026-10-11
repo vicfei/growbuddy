@@ -18,7 +18,7 @@ import datetime
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 from naga import kernel
 from naga.agent import AgentLoop
@@ -243,19 +243,12 @@ def goals_from_bundles(ledger: DurableLedger, *, limit: int = 3,
                        session_key: str | None = None) -> list[str]:
     """从最近的 trace.record ReplayBundle 提取回放目标(§7.4"回放真实历史
     轨迹"的字面化):bundle.session.inbound.text 即当年任务目标(已脱敏)。"""
+    from naga.curator import iter_trace_records
+
     goals: list[str] = []
-    with open(ledger.head_log_path, encoding="utf-8") as fh:
-        lines = fh.readlines()
-    for line in reversed(lines):  # 最近优先
+    for payload in reversed(iter_trace_records(ledger)):  # 最近优先
         if len(goals) >= limit:
             break
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if obj.get("kind") != "trace.record":
-            continue
-        payload = cast("dict[str, Any]", obj.get("payload") or {})
         if session_key and payload.get("session_key") != session_key:
             continue
         cas = payload.get("replay_bundle_cas")
