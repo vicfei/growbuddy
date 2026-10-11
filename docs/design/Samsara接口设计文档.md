@@ -1,7 +1,7 @@
 # Samsara 接口设计文档
 
-> 版本：v1.5（评审修订批次八：第九轮——补登批次七契约变更）
-> 配套文档：《Samsara 项目开发文档》v0.18（§3 内核抽象、§4.5 协议、§9 API 草案、附录 B/C/E/G）、《Samsara 数据模型设计文档》v1.3。
+> 版本：v1.6（#23 批 RFC 签核 2026-10-11：§5.6 side_effect 归一映射注）
+> 配套文档：《Samsara 项目开发文档》v0.19（§3 内核抽象、§4.5 协议、§9 API 草案、附录 B/C/E/G）、《Samsara 数据模型设计文档》v1.4。
 > 定位：所有接口的**契约级事实来源**——帧格式、方法签名、事件目录、错误码、SDK 接口，细化到可直接编码。
 > 约定：JSON 字段蛇形；时间 UTC ISO8601；ID 用 ULID（带前缀，如 `ag_`、`tr_`、`fx_`）；金额用整数美分。
 
@@ -359,6 +359,8 @@ interface NodeProvider {
 
 新 cap 注册未声明类别时**默认落入最高档 R4**（宁严勿宽），owner 可显式降级并留审计。
 
+> **#23 批 RFC 签核（2026-10-11）——实现侧 side_effect 归一映射**：工具声明 `side_effect` 时按 `read→R0`、`write→R2` 归一（泛写无工作区边界信息，宁严勿宽）；显式 `risk_level` 声明优先于 side_effect 归一；未作任何声明默认 R4。§10.1 信任档位（guest=R0/known=R1/owner 无封顶）按 §5.6 表由声明式配置执行。
+
 ---
 
 # 6. 领域契约 Schema
@@ -522,6 +524,7 @@ spec-constants 影响: （新增/修改常量及其 authority 归属）
 
 | 版本 | 日期 | 变更 | RFC |
 |---|---|---|---|
+| 1.6 | #23 批 RFC 签核（2026-10-11） | §5.6 补实现侧 side_effect 归一映射注（read→R0/write→R2/未声明→R4，显式 risk_level 优先）；配套 v0.19 | RFC23-B1 |
 | 1.5 | 评审修订批次八（第九轮，补登批次七契约变更） | R8：§5.1 新增 trust()/budget() 访问器签名 + TS emitAsync≡Python aemit 命名映射注；§4.1 矩阵行去 critical 限定（rollback./trust./constitution.* 优先级以 §4 目录为准）；§2.2 分块上传会话 TTL 条款（asset_upload_session_ttl_hours） | — |
 | 1.4 | 评审修订批次六（第七轮） | R7：§8 删错误码旧表叠加残留；§3.2 补 asset.put.begin/chunk/commit 方法行；§4 事件目录补 trust.anchor_skipped；配套 v0.18 | — |
 | 1.3 | 评审修订批次五（第六轮） | R6：§5.1 SDK 三形态+compensable+grant（INC9）；§5.4 ToolResult+compensate；§2.2 分块上传/错误帧 fallback/resume_from_seq 废除；§10 矩阵 untrusted 检索格改 ❌；§10.1 cas_id 即凭证；§6.1 bundle PII 两级闸；§6.2 kind+memory.consolidate；§8 逐码 retryable 列；hello-ok 默认 known | — |

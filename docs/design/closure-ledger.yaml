@@ -2,7 +2,7 @@
 # 地位：R3 级资产（附录 K.9）；v1.0 冻结四门槛 = ①本账本全部 verified ②冻结检查器绿灯 ③附录 K 消融进正文 ④written-back 目标章节存在性断言（K.9/C3）
 # 状态机：open → designed → written-back（target 栏引文档章节）→ verified（verify 栏引 PR/测试/检查项）
 # 批次八回写已完成（第九轮评审·终审复验）：6 条入账全 verified；累计 54 verified、58 written-back（验证窗口 M1–M4）、4 designed（P1–P4 待冻结消融）
-# 汇总(machine): total=116 written-back=58 designed=4 verified=54 open=0
+# 汇总(machine): total=117 written-back=58 designed=4 verified=55 open=0
 
 version: 1
 items:
@@ -166,3 +166,6 @@ items:
   - {id: R9-备注一, ruling: 接受——R19 规则计数改为数自身源码中装饰器出现次数，与"R19 须最后注册"的顺序假设解耦（首跑即抓出注释自引用一次，已修）, target: "已回写：freeze_check.py(R19)", verify: "R19 绿（规则数源自源码计数）", status: verified}
   - {id: R9-备注二, ruling: 接受——R09b detail 如实标注已知弱点（短值子串易撞，检出力集中在长值；按下限检查看待），防过度信任, target: "已回写：freeze_check.py(R09b detail)", verify: "R09b 输出含弱点标注（可复现命令可见）", status: verified}
   - {id: R9-备注三, ruling: 接受——R17 过宽正则以源码注释记录在案（误报方向可接受：撞到即人工甄别，真 kind 补枚举、误伤改文案）, target: "已回写：freeze_check.py(R17 注释)", verify: "R17 绿 + 记录在案注释存在（grep 可查）", status: verified}
+
+  # ── #23 批 RFC 签核(2026-10-11,设计所有者全按建议批准)────────────
+  - {id: RFC23-B1, ruling: 接受——M1-M3 实现期注册表增补批:账本枚举 additive 六 kind(trace.record/skill.use/channel.bound/channel.unbound/agent.spawned/agent.terminated);spec-constants v3 补注册 11 条(派生域 3 条权威=主文档§5.4,渠道/派生实现默认 8 条走 RFC 权威类);接口§5.6 补 side_effect 归一映射注(read→R0/write→R2/未声明→R4,显式 risk_level 优先);偏差三条裁决(摘要字段白名单近似=接受/非 owner WS 会话绑定=推迟 M3/M4/write 归 R2=维持), target: "已回写：数据模型§3.1 + 接口§5.6 + 主文档§5.4 + spec-constants.yaml v3 + freeze_check.py(R04/R09 扩展)", verify: "可复现命令 python3 freeze_check.py:20 规则全绿(无计数声明,以命令输出为准);Naga 侧 README/研究文档已同步", status: verified}
