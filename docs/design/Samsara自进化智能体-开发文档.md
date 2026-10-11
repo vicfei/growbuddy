@@ -1,6 +1,6 @@
 # Samsara 自进化智能体 · 项目开发文档
 
-> 版本：v0.18（评审修订批次六：第七轮执行层收尾——检查器扩至 18 规则+R16/R17/R18 上岗；账本 105 条，详见 closure-ledger.yaml 汇总行）
+> 版本：v0.19（#23 批 RFC 签核 2026-10-11：注册表增补 11 常量（§5.4 派生域 4 + 渠道域 RFC 权威类 7）、账本枚举 additive 六 kind；账本 117 条，详见 closure-ledger.yaml 汇总行）
 > 状态：待评审
 > 定位：本文档是 Samsara 项目的**架构领域**事实来源，涵盖架构设计、模块规格、协议草案、安全模型与开发路线图。跨文档冲突按附录 K.0 领域权威矩阵裁决（K.0.1：本文档不再自称全局 SSOT）。
 
@@ -412,6 +412,9 @@ child.rCeiling     ≤ parent.rLevel            // 动刀权限只降
 ```
 
 深度与配额的乘性衰减保证：**任何派生树在有限步内终止**，无需运行时监督者。
+
+> #23 批 RFC 签核（2026-10-11）：示例树"子 ≤40%"即注册常量 `spawn_child_budget_share=0.4`
+> （spec-constants v3）；软限 3 / 硬顶 5 即 `spawn_depth_soft_limit` / `spawn_depth_hard_cap`。
 
 ### 回收语义
 

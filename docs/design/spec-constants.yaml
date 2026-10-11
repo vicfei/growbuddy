@@ -4,8 +4,11 @@
 # 示例值、估算值、一次性演示数字豁免注册（估算表须标注"估算"）。主文档引用已注册常量时一律为示意值并带引用脚注。
 # 检查器按 (constant_id, value) 对匹配，不按裸值匹配。
 # v2：R6-A7 补注册 16 条 + 新增 tbd 占位区（未决占位符先登记，超期升级 §15 纪律）。
+# v3：#23 批 RFC 签核（2026-10-11）补注册 11 条——派生域 3 条（权威=主文档 §5.4）、
+#      渠道/派生实现默认 8 条（RFC 权威类：authority 以 RFC 起头者以已签核 RFC 文档为权威，
+#      裁决记录见 closure-ledger.yaml RFC23-B1）。
 
-version: 2
+version: 3
 constants:
 
   # ── 接口文档权威域 ──────────────────────────────
@@ -220,6 +223,54 @@ constants:
     value: 5
     authority: 功能说明文档 §4
     note: 双账对账差异告警阈值
+
+  # ── #23 批 RFC 签核 2026-10-11(主文档 §5.4 派生域)──────────────
+  spawn_depth_soft_limit:
+    value: 3
+    authority: 主文档 §5.4
+    note: 派生深度软限,超出需 owner 批准(批准记录落 review_events);审批队列 M4
+  spawn_depth_hard_cap:
+    value: 5
+    authority: 主文档 §5.4
+    note: INC3 硬顶,不可逾越
+  spawn_wall_ms_default:
+    value: 120000
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-8"
+    note: R6-B13:墙钟由 L1 Spawner 强制(L0 Budget 不含此字段);默认值为实现期选择
+  spawn_child_budget_share:
+    value: 0.4
+    authority: 主文档 §5.4
+    note: §5.4 配额递减树示例:子 ≤ 40% 父剩余;严格小于由 Budget.allocate 强制
+
+  # ── #23 批 RFC 签核 2026-10-11(微信渠道域,RFC 权威类)──────────
+  wechat_typing_refresh_sec:
+    value: 45
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-1"
+    note: typing status=1 约 60s 自过期,45s 重发留 15s 余量
+  wechat_typing_ticket_ttl_sec:
+    value: 540
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-2"
+    note: typing_ticket 官方 ~10min,9min 保守续取
+  wechat_reply_chunk_chars:
+    value: 1900
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-3"
+    note: 单条上限 ~2000 的分段阈值;真实 4705 字 3 段送达实证
+  wechat_media_max_bytes:
+    value: 20971520
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-4"
+    note: 媒体密文上限(超限拒收;K.7 大对象分层属 M3+)
+  wechat_media_download_timeout_sec:
+    value: 240
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-5"
+    note: CDN 慢滴流总额限——逐读超时无法约束(460KB 实测拖 197s),须总额限
+  wechat_err14_pause_threshold:
+    value: 5
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-6"
+    note: 连续 -14(token 失效)→ 暂停渠道并回调重绑
+  wechat_poll_backoff_max_sec:
+    value: 60
+    authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-7"
+    note: 轮询错误指数退避上限(1s 起)
 
 # ── TBD 占位（C1 延伸：先登记不确定性，超期未决自动升级，纪律同 §15）──
 tbd:

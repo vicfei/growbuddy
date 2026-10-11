@@ -98,11 +98,19 @@ def r03():
     return ok, f'缺表: {missing or "无"}; memory_items 时间戳: {bool(mem_ok)}; sessions 时间戳: {bool(ses_ok)}'
 
 
-@rule('R04 kind_enum（账本枚举含失败类 + 种子内核条目映射注，A6/GAP4）')
+@rule('R04 kind_enum（账本枚举含失败类 + 种子内核条目映射注，A6/GAP4；+#23 批 additive 六 kind）')
 def r04():
     s = section(T(DM), '3.1')
-    ok = ('effect.apply_failed' in s and 'fiber.failed' in s and 'Naga 种子内核' in s)
-    return ok, '失败类 kind 与映射注存在' if ok else '缺 effect.apply_failed / fiber.failed / 映射注'
+    legacy = ('effect.apply_failed' in s and 'fiber.failed' in s and 'Naga 种子内核' in s)
+    # #23 批 RFC 签核(2026-10-11)additive：渠道/派生/计量域六 kind 必须在枚举区
+    rfc23 = ('trace.record' in s and 'skill.use' in s and 'channel.bound' in s
+             and 'channel.unbound' in s and 'agent.spawned' in s
+             and 'agent.terminated' in s)
+    ok = legacy and rfc23
+    miss = [k for k in ('trace.record', 'skill.use', 'channel.bound', 'channel.unbound',
+                        'agent.spawned', 'agent.terminated') if k not in s] if not rfc23 else []
+    return ok, ('失败类 kind 与映射注存在；#23 批六 kind 在位' if ok
+                else f'缺失败类/映射注: {not legacy}；缺 #23 批 kind: {miss or "无"}')
 
 
 @rule('R05 inv_registry（§2.3 单一注册 INV-1~8，B11）')
@@ -141,14 +149,18 @@ def r08():
     return (not m1 and not m2), f'§5.1 缺 {m1 or "无"}；§5.4 缺 {m2 or "无"}'
 
 
-@rule('R09 constants（注册表权威可解析 + A7 必备键在位，R3-1/C1）')
+@rule('R09 constants（注册表权威可解析 + A7 必备键在位，R3-1/C1；+#23 批 RFC 权威类与注册键）')
 def r09():
     import yaml
     doc = yaml.safe_load(T(CONST))
-    bad_auth, keys = [], set()
+    bad_auth, keys, rfc_class = [], set(), []
     for k, v in doc['constants'].items():
         keys.add(k)
         auth = v.get('authority', '')
+        if auth.startswith('RFC'):
+            # #23 批新增权威类：RFC 签核条目以已签核 RFC 文档为权威(不做冻结文档章节解析)
+            rfc_class.append(k)
+            continue
         dm_ = re.match(r'(主文档|接口设计文档|数据模型设计文档|功能说明文档)\s*(?:（[^）]*）)?\s*[§ ]\s*(.+)', auth)
         if not dm_:
             bad_auth.append(f'{k}: 无法解析 {auth!r}')
@@ -171,8 +183,17 @@ def r09():
                 'nfr_recovery_sec', 'nfr_first_token_sec', 'nfr_cost_premium_pct',
                 'nfr_reconcile_diff_alert_pct'}
     missing = required - keys
+    # #23 批注册键必备(v3)：派生域 4 + 渠道域 7(RFC 权威类)
+    rfc23_keys = {'spawn_depth_soft_limit', 'spawn_depth_hard_cap',
+                  'spawn_wall_ms_default', 'spawn_child_budget_share',
+                  'wechat_typing_refresh_sec', 'wechat_typing_ticket_ttl_sec',
+                  'wechat_reply_chunk_chars', 'wechat_media_max_bytes',
+                  'wechat_media_download_timeout_sec', 'wechat_err14_pause_threshold',
+                  'wechat_poll_backoff_max_sec'}
+    missing |= rfc23_keys - keys
     ok = not bad_auth and not missing
-    return ok, f'权威不可解析: {bad_auth[:3] or "无"}；缺键: {sorted(missing) or "无"}'
+    return ok, (f'权威不可解析: {bad_auth[:3] or "无"}；缺键: {sorted(missing) or "无"}；'
+                f'RFC 权威类: {len(rfc_class)} 条')
 
 
 @rule('R10 hello_trust（配对默认 known，owner 仅限回环首设备，B7）')

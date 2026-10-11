@@ -1,7 +1,7 @@
 # Samsara 数据模型设计文档
 
-> 版本：v1.3（评审修订批次六：第七轮；逐条变更以 closure-ledger.yaml 批次为准）
-> 配套文档：《Samsara 自进化智能体 · 项目开发文档》v0.18，本文档是其 §8 的独立扩写与落地化。
+> 版本：v1.4（#23 批 RFC 签核 2026-10-11：§3.1 枚举 additive 六 kind；逐条变更以 closure-ledger.yaml 批次为准）
+> 配套文档：《Samsara 自进化智能体 · 项目开发文档》v0.19，本文档是其 §8 的独立扩写与落地化。
 > 读者：内核开发者（M0）、存储/后端工程师。
 > 范围：L0–L3 全部持久化数据的模型、存储、查询与生命周期；不含传输协议（见主文档 §9）。
 
@@ -91,7 +91,7 @@
 }
 ```
 
-- `kind` 枚举：`plugin.install|activate|suspend|dispose`、`effect.apply|revert|compensate|preapproval`、`session.open|close`、`agent.spawn|terminate`、`skill.commit|promote|quarantine`、`memory.write|forget|forget.rollback`、`job.fire|missed`、`trust.link|unlink|anchor|anchor_missing|anchor_skipped`、`workspace.bind`、`mode.changed`、`intervene.queued|immediate|kill`、`device.pair_request|pair_approved`、`channel.fallback`、`rollback.marker`、`review.event`、`effect.apply_failed`、`fiber.failed`（R6-A6 additive：失败迁移恰是最需审计的状态变化）（GAP4 补全：一切状态变化必须入账，枚举缺口即审计盲区；新增 kind 只允许 additive）；
+- `kind` 枚举：`plugin.install|activate|suspend|dispose`、`effect.apply|revert|compensate|preapproval`、`session.open|close`、`agent.spawn|terminate`、`skill.commit|promote|quarantine`、`memory.write|forget|forget.rollback`、`job.fire|missed`、`trust.link|unlink|anchor|anchor_missing|anchor_skipped`、`workspace.bind`、`mode.changed`、`intervene.queued|immediate|kill`、`device.pair_request|pair_approved`、`channel.fallback`、`rollback.marker`、`review.event`、`effect.apply_failed`、`fiber.failed`（R6-A6 additive：失败迁移恰是最需审计的状态变化）（GAP4 补全：一切状态变化必须入账，枚举缺口即审计盲区；新增 kind 只允许 additive）、`trace.record`、`skill.use`、`channel.bound`、`channel.unbound`、`agent.spawned`、`agent.terminated`（#23 批 RFC 签核 2026-10-11 additive：Naga 实现期渠道/派生/计量域事件，裁决记录见 closure-ledger.yaml RFC23-B1）；
   - Naga 种子内核条目名映射（additive 细化）：`effect.register`/`effect.apply_begin`/`effect.apply_ok` 归 `effect.apply` 族；`fiber.activated`/`fiber.deactivated` 对应 `plugin.activate/suspend/dispose`；`fiber.failed`/`effect.apply_failed` 为新增失败类；`effect.revert` 即枚举 `effect.apply|revert|...` 的 revert 族完整字面量；`event.emit` 归事件留痕族（载荷引用化：只记事件名与计数，不记内容本体）；`event.handler_failed` 为事件分发的故障隔离记录（kernel v3.4 C2 起写入，R7/P1-4 补录）；锚定事件完整字面量 `trust.anchor_missing`/`trust.anchor_skipped`（枚举 trust 族缩写形态的全写，R7/P1-3 补录）。
 - `payload` 本体超过 1KB（`ledger_inline_payload_max_bytes`）一律入 CAS，账本只存 `payload_hash`；小 payload 可内联——**但记忆类 payload 无论大小一律外置 CAS 并以独立密钥加密**（K.6 加密擦除前提）；
 - **哈希链**：`entry_hash = sha256(prev_hash ‖ canonical(entry))`，启动时校验最近 N 条 + 抽查历史段。
