@@ -26,6 +26,25 @@ from naga.skills import SKILL_MAX_BYTES, SkillStore
 from naga.trace import TraceRecorder
 
 SKILL_DISTILL_MIN_TOOL_CALLS = 5  # spec-constants skill_distill_min_tool_calls / H.4
+
+
+def keywords_of(goal: str) -> list[str]:
+    words = [w for w in re.split(r"[^\w]+", goal) if len(w) >= 2]
+    cjk = re.findall(r"[\u4e00-\u9fff]", goal)
+    return words + [a + b for a, b in itertools.pairwise(cjk)]
+
+
+
+def cluster_of(goal: str) -> str:
+    """任务簇(E.2):确定性分簇——CJK 二元组优先、拉丁词(≥3)次之,前 3 个;
+    整句 CJK 长词不入簇(太具体,簇会碎片化)。"""
+    keywords = keywords_of(goal)
+    cjk_bigrams = [k for k in keywords
+                   if len(k) == 2 and re.search(r"[\u4e00-\u9fff]", k)]
+    latin = [k.lower() for k in re.split(r"[^\w]+", goal)
+             if len(k) >= 3 and not re.search(r"[\u4e00-\u9fff]", k)]
+    parts = (cjk_bigrams + latin)[:3]
+    return "-".join(parts)[:48] or "default"
 SKILL_INJECT_MAX_CHARS = 2000    # 候选 spec-constants skill_inject_max_chars:技能正文注入预算
 
 
@@ -87,7 +106,7 @@ class AgentLoop:
         仅列 URI 对模型行为零影响,技能必须真正进入上下文才构成资产)。"""
         if self._skills is None:
             return []
-        keywords = self._keywords(goal)
+        keywords = keywords_of(goal)
         scored: list[tuple[int, str, str, str]] = []  # (score, uri, cas_id, content)
         seen: set[str] = set()
         for branch in (f"local:{self._session_key}", "main"):
@@ -214,7 +233,9 @@ class AgentLoop:
                     sed = await self._sediment(goal, reply, rec, trace_id)
                     tokens += sed["tokens"]
                     cost += sed["cost_cents"]
-                trace = rec.finish(outcome="success", cost_tokens=tokens, cost_cents=cost)
+                trace = rec.finish(outcome="success", cost_tokens=tokens,
+                             cost_cents=cost,
+                             task_cluster=cluster_of(goal))
                 self._settle_branch("commit", trace_id)
                 return AgentResult(reply=reply, outcome="success",
                                    trace_id=str(trace["trace_id"]), steps=self._step_seq,
@@ -222,8 +243,9 @@ class AgentLoop:
             aborted = "步数上限"
         except kernel.QuotaExhausted:
             aborted = "预算耗尽"
-        trace = rec.finish(outcome="aborted", cost_tokens=tokens, cost_cents=cost,
-                           failure_analysis=aborted)
+        trace = rec.finish(outcome="aborted", cost_tokens=tokens,
+                           cost_cents=cost, failure_analysis=aborted,
+                           task_cluster=cluster_of(goal))
         self._settle_branch("discard", trace_id)
         return AgentResult(reply=None, outcome="aborted",
                            trace_id=str(trace["trace_id"]), steps=self._step_seq,

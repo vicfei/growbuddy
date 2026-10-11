@@ -177,13 +177,16 @@ class Gateway:
                  tools: list[Any] | None = None,
                  default_budget: int = 200_000,
                  home: str | None = None,
-                 wechat_request: Any | None = None):
+                 wechat_request: Any | None = None,
+                 router: Any | None = None):
         self._ledger = ledger
         self._make_adapter = make_adapter
         self._tools = tools or []
         self._default_budget = default_budget
         self._home = home
         self._wechat_request = wechat_request
+        self._router = router  # ModelRouter(M4b-1:任务级模型选型;缺省用 make_adapter)
+        self._routing_bg: set[asyncio.Task[None]] = set()  # 影子探索后台任务(可等待)
         self._wechat: Any | None = None  # WeChatChannel(attach_wechat 注入,避免循环依赖)
         self._wechat_channels: dict[str, Any] = {}  # binder → 渠道(多绑定并行)
         self.on_task_done: Any | None = None  # run_agent 完成回调(daemon 注入;M4a-2 自动晋升)
@@ -214,6 +217,13 @@ class Gateway:
         app.router.add_get("/wechat/bind/poll/{qrcode:.+}", self._wechat_bind_poll)
         app.router.add_get("/wechat/status", self._wechat_status)
         app.router.add_get("/wechat/unbind", self._wechat_unbind)
+        if self._router is not None:
+            async def _routing_stats(_request: web.Request) -> web.Response:
+                from naga.routing import routing_dashboard as _dash
+                router = self._router
+                assert router is not None  # 分支条件保证
+                return web.json_response(_dash(self._ledger, router.registry))
+            app.router.add_get("/routing/stats", _routing_stats)
         webchat = Path(__file__).parent / "webchat" / "index.html"
         if webchat.is_file():
             async def _index(_request: web.Request) -> web.StreamResponse:
@@ -373,29 +383,65 @@ class Gateway:
         kern = kernel.Kernel(ledger=cast("kernel.Ledger", self._ledger))  # 鸭子类型
         from naga.spawner import SubAgentSpawner  # 局部导入:spawner 依赖本模块,避免环
 
+        # M4b-1 路由(E.3):任务级选型——已证实簇用预算模型,否则旗舰(只向下探索)
+        spec = self._router.pick(goal) if self._router is not None else None
+        make_adapter = spec.make_adapter if spec is not None else self._make_adapter
+        model_id = spec.model_id if spec is not None else None
+
         skills = SkillStore(self._ledger)
         branch = self._make_branch(skills, session_key)
 
         spawner = SubAgentSpawner(
-            ledger=self._ledger, ctx=kern.root, make_adapter=self._make_adapter,
+            ledger=self._ledger, ctx=kern.root, make_adapter=make_adapter,
             raw_tools=self._tools, skill_store=skills,
             session_key=session_key, actor_trust=actor_trust,
             budget=kernel.Budget(budget), depth=0, parent_trace=trace_id,
             branch=branch)
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
                          budget=spawner.budget,
-                         adapter=self._make_adapter(), tools=spawner.make_tools(),
+                         adapter=make_adapter(), tools=spawner.make_tools(),
                          skill_store=skills,
                          session_key=session_key, trace_id=trace_id,
-                         actor_trust=actor_trust, branch=branch)
+                         actor_trust=actor_trust, branch=branch,
+                         model_id=model_id or "deepseek-v4-flash")
         try:
-            return await loop.run(goal)
+            result = await loop.run(goal)
+            if self._router is not None and spec is not None:
+                self._routing_bookkeeping(goal, session_key, spec, result)
+            return result
         finally:
             if self.on_task_done is not None:
                 try:
                     await self.on_task_done(session_key)  # 后台钩子:异常不杀任务
                 except Exception:  # noqa: BLE001, S110
                     pass
+
+    def _routing_bookkeeping(self, goal: str, session_key: str,
+                             spec: Any, result: Any) -> None:
+        """路由记账 + 触发影子探索(E.4);后台化,异常绝不影响任务结果。"""
+        from naga.agent import cluster_of
+        router = self._router
+        if router is None:
+            return
+        try:
+            cluster = cluster_of(goal)
+            flagship = router.registry.flagship()
+            router.record_task(
+                trace_id=str(result.trace_id or "tr_rt"), cluster=cluster,
+                model=spec.model_id,
+                prompt_tokens=max(0, result.tokens), completion_tokens=0,
+                flagship_model=flagship.model_id)
+            router.scorecard.record_result(
+                cluster, spec.model_id, result.outcome == "success")
+            if (spec.tier == "flagship" and result.outcome == "success"
+                    and router.scorecard.proven_budget(cluster) is None):
+                task = asyncio.create_task(
+                    router.shadow_explore(goal, session_key=session_key))
+                self._routing_bg.add(task)
+                task.add_done_callback(self._routing_bg.discard)
+        except Exception as err:  # noqa: BLE001 —— 路由旁路:绝不杀任务
+            print(f"[routing] 记账/探索异常: {type(err).__name__}: {err}",
+                  flush=True)
 
     def _make_branch(self, skills: SkillStore, session_key: str) -> Any:
         """会话任务分支(M3-2):技能域 COW——base=全局 main 视图,sink=物化到

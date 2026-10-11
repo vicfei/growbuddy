@@ -187,12 +187,45 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("goal", help="任务目标(自然语言)")
     r.add_argument("--budget", type=int, default=200_000, help="token 预算上限")
     r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
+    sub.add_parser("routing", help="模型路由仪表盘(M4b:节省/记分卡)")
     args = parser.parse_args(argv)
     if args.cmd == "daemon":
         return cmd_daemon(args)
     if args.cmd == "run":
         return cmd_run(args)
+    if args.cmd == "routing":
+        return cmd_routing(args)
     return cmd_doctor(args)
+
+
+def cmd_routing(args: argparse.Namespace) -> int:
+    """路由仪表盘:读守护进程的 HTTP 口(与 WebChat 同源,仅回环)。"""
+    import json as _json
+    import urllib.request
+
+    port = int(os.environ.get("NAGA_WS_PORT", "18789"))
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/routing/stats", timeout=5) as resp:
+            data = _json.loads(resp.read())
+    except (OSError, ValueError) as err:
+        print(f"routing: 仪表盘不可达(daemon 未运行或路由未启用): {err}")
+        return 1
+    if args.json:
+        print(_json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"价格表版本: {data['price_table_version']}")
+    print(f"净节省: {data['net_savings_micro_cents']} µ¢ "
+          f"(毛省 {data['gross_savings_micro_cents']} − 探索 "
+          f"{data['exploration_spend_micro_cents']})")
+    print(f"任务数: {data['tasks']}")
+    for model, entry in sorted(data["per_model"].items()):
+        print(f"  {model}: tasks={entry['tasks']} shadow={entry['shadow_runs']} "
+              f"tokens={entry['tokens']} actual={entry['actual_micro_cents']} µ¢")
+    print("记分卡(簇 × 模型: 成功/失败, 影子胜/负):")
+    for cluster, model, succ, fail, swin, sloss in data["scorecard"]:
+        print(f"  {cluster} × {model}: {succ}/{fail}, 影子 {swin}/{sloss}")
+    return 0
 
 
 if __name__ == "__main__":

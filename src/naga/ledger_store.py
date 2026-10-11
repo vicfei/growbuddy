@@ -58,6 +58,25 @@ CREATE TABLE IF NOT EXISTS effects (
   compensable INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('applied','reverted','compensated','failed'))
 );
+CREATE TABLE IF NOT EXISTS model_scorecard (
+  cluster TEXT NOT NULL,
+  model TEXT NOT NULL,
+  successes INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  shadow_wins INTEGER NOT NULL DEFAULT 0,
+  shadow_losses INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (cluster, model)
+);
+CREATE TABLE IF NOT EXISTS routing_tasks (
+  trace_id TEXT PRIMARY KEY,
+  cluster TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL,
+  completion_tokens INTEGER NOT NULL,
+  flagship_model TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'task',
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS promotion_requests (
   name TEXT NOT NULL,
   from_branch TEXT NOT NULL,

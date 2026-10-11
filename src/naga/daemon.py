@@ -71,7 +71,23 @@ async def amain(home: str) -> int:
         from naga.worker import WorkerTool
 
         tools.append(WorkerTool.of(WebSearchTool, providers_path=providers_path))
-    gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home)
+    # M4b-1 模型自动路由(E):旗舰 deepseek + 预算 qwen-flash(dashscope 凭据在场时)
+    from naga.llm import OpenAIChatAdapter, ProviderConfig
+    from naga.routing import ModelRegistry, ModelRouter, ModelSpec
+
+    registry_specs = [ModelSpec(model_id="deepseek-v4-flash", tier="flagship",
+                                make_adapter=lambda: adapter)]
+    if creds.has("dashscope"):
+        dash_cfg = creds.provider("dashscope")
+        registry_specs.append(ModelSpec(
+            model_id="qwen-flash", tier="budget",
+            make_adapter=lambda: OpenAIChatAdapter(
+                ProviderConfig(base_url=dash_cfg.base_url,
+                               api_key=dash_cfg.api_key), "qwen-flash")))
+    registry = ModelRegistry(registry_specs)
+    router = ModelRouter(registry=registry, ledger=led, tools=tools)
+    gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home,
+                      router=router)
 
     # 微信渠道:runner 经网关 lane(会话路由单一权威);guest 预算封顶(§10.1 首项)
     from naga.wechat import WeChatChannel

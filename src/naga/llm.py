@@ -87,13 +87,69 @@ class ModelAdapter(Protocol):
                    max_tokens: int = 1024) -> ChatResponse: ...
 
 
+# ── 价格表(E.1:带版本的资产;来源与时效标注,随价格表资产版本化更新)──
+PRICE_TABLE_VERSION = "2026-10-est"  # 估算版:厂商公开定价页量级,待用户确认后升版
+# (prompt, completion) 美分/1M tokens
+PRICE_CENTS_PER_MTOK: dict[str, tuple[int, int]] = {
+    "deepseek-v4-flash": (27, 110),  # 估算:该档公开定价量级(≈$0.27/$1.10 每 1M)
+    "qwen-flash": (3, 9),            # 估算:轻量档公开定价量级
+}
+
+
 def price_cents(model: str, prompt_tokens: int, completion_tokens: int) -> int:
-    """M1 记 0:价格是带版本的资产(E.1),M2 落地价格表后生效。"""
-    del model, prompt_tokens, completion_tokens
-    return 0
+    """按价格表计费(美元分);未登记模型计 0(宁少记不虚记)。"""
+    rate = PRICE_CENTS_PER_MTOK.get(model)
+    if rate is None:
+        return 0
+    pin, pout = rate
+    return round((prompt_tokens * pin + completion_tokens * pout) / 1_000_000)
 
 
-class DeepSeekAdapter:
+def price_micro_cents(model: str, prompt_tokens: int,
+                      completion_tokens: int) -> float:
+    """仪表盘精度:微美分(1e-6 美元分级的费率换算,避免小任务截断为 0)。"""
+    rate = PRICE_CENTS_PER_MTOK.get(model)
+    if rate is None:
+        return 0.0
+    pin, pout = rate
+    return (prompt_tokens * pin + completion_tokens * pout) / 1_000_000
+
+
+class OpenAIChatAdapter:
+    """通用 OpenAI 兼容 chat 适配器(任意厂商 compatible-mode;deepseek/dashscope 同构)。"""
+
+    def __init__(self, config: ProviderConfig, model: str, timeout: float = 60.0):
+        self._config = config
+        self._model = model
+        self._timeout = timeout
+
+    async def chat(self, messages: list[dict[str, Any]],
+                   tools: list[ToolSpec] | None = None, *,
+                   max_tokens: int = 1024) -> ChatResponse:
+        payload: dict[str, Any] = {"model": self._model, "messages": messages,
+                                   "max_tokens": max_tokens}
+        if tools:
+            payload["tools"] = [t.to_openai() for t in tools]
+        headers = {"Authorization": "Bearer " + self._config.api_key,
+                   "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(self._config.base_url + "/chat/completions",
+                                     json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        msg: dict[str, Any] = data["choices"][0]["message"]
+        usage: dict[str, Any] = data.get("usage") or {}
+        raw_calls: list[dict[str, Any]] = msg.get("tool_calls") or []
+        return ChatResponse(
+            content=msg.get("content"),
+            tool_calls=[{"id": c["id"], "name": c["function"]["name"],
+                         "arguments": c["function"].get("arguments") or "{}"}
+                        for c in raw_calls],
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)))
+
+
+class DeepSeekAdapter(OpenAIChatAdapter):
     """OpenAI 兼容 chat 适配器(deepseek;推理型模型纪律见模块 docstring)。"""
 
     def __init__(self, config: ProviderConfig, model: str, timeout: float = 60.0):
