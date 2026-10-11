@@ -120,17 +120,24 @@ class SessionBranch:
     # ---- 会话结束二选一(K.2) ----
 
     def commit(self, trace_id: str | None = None) -> str | None:
-        """差异入 CAS(值+manifest)+ 物化 sink;级联:open 子分支一并 commit。
-        op 集合由 overlay 终态导出(同键多次写=终态一次,天然去重)。"""
+        """物化 sink(返回 CAS 则 manifest 引用之,杜绝同内容双写)+ manifest
+        入 CAS;级联:open 子分支一并 commit。op 集合由 overlay 终态导出
+        (同键多次写=终态一次,天然去重)。"""
         self._require_open()
         cascaded = self._cascade("commit", trace_id)
         ops: list[dict[str, Any]] = []
         for key, value in self._overlay.items():
             if value is None:
+                if self._sink_delete is not None:
+                    self._sink_delete(key)
                 ops.append({"op": "del", "key": key})
-            else:
-                ops.append({"op": "put", "key": key,
-                            "value_cas": self._cas_put(value)})
+                continue
+            cas: Any = None
+            if self._sink_put is not None:
+                cas = self._sink_put(key, value)  # 物化即持久化:引用其 CAS
+            if not isinstance(cas, str) or not cas:
+                cas = self._cas_put(value)        # 无 sink/无返回:分支自持
+            ops.append({"op": "put", "key": key, "value_cas": cas})
         cas_id: str | None = None
         if ops:
             manifest = {"schema": BRANCH_MANIFEST_SCHEMA,
@@ -142,13 +149,6 @@ class SessionBranch:
             cas_id = self._cas_put(
                 json.dumps(manifest, ensure_ascii=False,
                            separators=(",", ":")).encode())
-            for op in ops:
-                if op["op"] == "put" and self._sink_put is not None:
-                    value = self._overlay[op["key"]]
-                    if value is not None:  # 终态导出:put 键必有值
-                        self._sink_put(op["key"], value)
-                elif op["op"] == "del" and self._sink_delete is not None:
-                    self._sink_delete(op["key"])
         self._state = "committed"
         # commit 不另入账:manifest 已入 CAS、物化自带 skill.commit 事件
         # (审计轨迹完备);fsync 级账本追加会令捕获开销翻倍,违反 K.2 SLO 本意
