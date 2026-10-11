@@ -28,6 +28,31 @@ CURATOR_ARCHIVE_DAYS = 90      # 90 天 → archived
 SKILL_PROMOTION_TRIGGER_USES = 3  # 候选 spec-constants skill_promotion_trigger_uses
 
 
+def iter_trace_records(ledger: DurableLedger) -> list[dict[str, Any]]:
+    """全部 trace.record 载荷(内联小载荷 + CAS 外置大载荷,按 seq 序)。"""
+    out: list[dict[str, Any]] = []
+    payload: dict[str, Any] | None
+    with open(ledger.head_log_path, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if obj.get("kind") != "trace.record":
+                continue
+            payload = obj.get("payload")
+            if payload is None:
+                cas = obj.get("payload_cas")
+                if cas:
+                    try:
+                        payload = json.loads(ledger.cas.get(str(cas)))
+                    except (OSError, ValueError):
+                        continue
+            if isinstance(payload, dict):
+                out.append(payload)
+    return out
+
+
 def scan_skill_events(ledger: DurableLedger) -> dict[str, Any]:
     """扫 head.log 的技能域事件,返回活性/计量权威视图(个人级规模,全扫可承受)。
 
