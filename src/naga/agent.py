@@ -26,6 +26,7 @@ from naga.skills import SKILL_MAX_BYTES, SkillStore
 from naga.trace import TraceRecorder
 
 SKILL_DISTILL_MIN_TOOL_CALLS = 5  # spec-constants skill_distill_min_tool_calls / H.4
+SKILL_INJECT_MAX_CHARS = 2000    # 候选 spec-constants skill_inject_max_chars:技能正文注入预算
 
 
 class AgentResult(BaseModel):
@@ -52,7 +53,9 @@ class AgentLoop:
                  max_steps: int = 8, trace_id: str | None = None,
                  actor_trust: str | None = None,
                  max_tokens: int = 8192, trace_parent: str | None = None,
-                 branch: SessionBranch | None = None):
+                 branch: SessionBranch | None = None,
+                 forced_skills: list[tuple[str, str]] | None = None,
+                 meter_skills: bool = True):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
@@ -67,6 +70,8 @@ class AgentLoop:
         self._max_tokens = max_tokens  # 推理模型:reasoning+content 共享上限,须给足
         self._trace_parent = trace_parent
         self._branch = branch
+        self._forced = forced_skills or []   # 影子验证:强制注入的候选 (uri, content)
+        self._meter_skills = meter_skills    # 影子运行不计量(非真实使用)
         self._step_seq = 0
 
     # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
@@ -76,11 +81,14 @@ class AgentLoop:
         cjk = re.findall(r"[\u4e00-\u9fff]", goal)
         return words + [a + b for a, b in itertools.pairwise(cjk)]
 
-    def _select_skills(self, goal: str, limit: int = 3) -> list[str]:
+    def _select_skills(self, goal: str, limit: int = 3
+                       ) -> list[tuple[str, str]]:
+        """检索命中技能为 (uri, content) 对——正文随系统提示注入(M4a-1:
+        仅列 URI 对模型行为零影响,技能必须真正进入上下文才构成资产)。"""
         if self._skills is None:
             return []
         keywords = self._keywords(goal)
-        scored: list[tuple[int, str, str]] = []  # (score, uri, cas_id)
+        scored: list[tuple[int, str, str, str]] = []  # (score, uri, cas_id, content)
         seen: set[str] = set()
         for branch in (f"local:{self._session_key}", "main"):
             for cas, name, _, _, _ in self._skills.list(branch=branch):
@@ -93,21 +101,31 @@ class AgentLoop:
                 text = (name + " " + content).lower()
                 score = sum(1 for k in keywords if k.lower() in text)
                 if score > 0:
-                    scored.append((score, f"skill://{name}@v{meta.version}", cas))
+                    scored.append((score, f"skill://{name}@v{meta.version}", cas, content))
                     seen.add(name)
         scored.sort(key=lambda p: (-p[0], p[1]))
         picked = scored[:limit]
-        for _, _, cas in picked:  # 命中即计量(uses/lastUsed,投影确定性更新)
-            self._ledger.append("skill.use", "root", {"cas_id": cas})
-        return [uri for _, uri, _ in picked]
+        for _, _uri, cas, _body in picked:  # 命中即计量(uses/lastUsed,投影确定性更新)
+            if self._meter_skills:
+                self._ledger.append("skill.use", "root", {"cas_id": cas})
+        return [(uri, content) for _, uri, _, content in picked]
 
-    def _system_prompt(self, skills: list[str]) -> str:
+    def _system_prompt(self, skills: list[tuple[str, str]],
+                       forced: list[tuple[str, str]] | None = None) -> str:
         lines = [
             ("你是 Naga(Samsara Python 路线)的任务执行智能体。"
              "能直接回答时直接回答;需要外部事实或资料时调用工具。"),
         ]
-        if skills:
-            lines += ["", "## 可参考技能", *[f"- {uri}" for uri in skills]]
+        sections = [(uri, content) for uri, content in skills]
+        if forced:
+            sections = forced + sections  # 影子验证:候选强制注入(不受检索命中约束)
+        if sections:
+            lines += ["", "## 可参考技能(按要点执行)"]
+            for uri, content in sections:
+                body = content[:SKILL_INJECT_MAX_CHARS]
+                if len(content) > SKILL_INJECT_MAX_CHARS:
+                    body += "\n…(截断)"
+                lines += [f"### {uri}", body]
         return "\n".join(lines)
 
     async def _call_tool(self, tc: dict[str, Any]) -> tuple[Any, bool, int]:
@@ -132,8 +150,9 @@ class AgentLoop:
 
     async def run(self, goal: str) -> AgentResult:
         skills = self._select_skills(goal)
+        loaded_uris = [uri for uri, _ in skills] + [uri for uri, _ in self._forced]
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt(skills)},
+            {"role": "system", "content": self._system_prompt(skills, self._forced)},
             {"role": "user", "content": goal},
         ]
         tool_specs = [ToolSpec(name=t.name, description=t.description,
@@ -142,7 +161,7 @@ class AgentLoop:
         rec = TraceRecorder(self._ledger,
                             trace_id=trace_id,
                             session_key=self._session_key, inbound={"text": goal},
-                            skills_loaded=skills,
+                            skills_loaded=loaded_uris,
                             env={"model": self._model_id,
                                  "channel": self._session_key.split(":", 1)[0],
                                  "actor_trust": self._actor_trust},

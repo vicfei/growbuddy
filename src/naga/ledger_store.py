@@ -58,6 +58,16 @@ CREATE TABLE IF NOT EXISTS effects (
   compensable INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('applied','reverted','compensated','failed'))
 );
+CREATE TABLE IF NOT EXISTS promotion_requests (
+  name TEXT NOT NULL,
+  from_branch TEXT NOT NULL,
+  r_level INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected')),
+  shadow_report TEXT,
+  requested_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_promotion_pending ON promotion_requests(status, requested_at);
 CREATE TABLE IF NOT EXISTS skill_nodes (
   cas_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
