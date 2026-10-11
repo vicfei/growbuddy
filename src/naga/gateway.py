@@ -366,18 +366,49 @@ class Gateway:
         kern = kernel.Kernel(ledger=cast("kernel.Ledger", self._ledger))  # 鸭子类型
         from naga.spawner import SubAgentSpawner  # 局部导入:spawner 依赖本模块,避免环
 
+        skills = SkillStore(self._ledger)
+        branch = self._make_branch(skills, session_key)
+
         spawner = SubAgentSpawner(
             ledger=self._ledger, ctx=kern.root, make_adapter=self._make_adapter,
-            raw_tools=self._tools, skill_store=SkillStore(self._ledger),
+            raw_tools=self._tools, skill_store=skills,
             session_key=session_key, actor_trust=actor_trust,
-            budget=kernel.Budget(budget), depth=0, parent_trace=trace_id)
+            budget=kernel.Budget(budget), depth=0, parent_trace=trace_id,
+            branch=branch)
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
                          budget=spawner.budget,
                          adapter=self._make_adapter(), tools=spawner.make_tools(),
-                         skill_store=SkillStore(self._ledger),
+                         skill_store=skills,
                          session_key=session_key, trace_id=trace_id,
-                         actor_trust=actor_trust)
+                         actor_trust=actor_trust, branch=branch)
         return await loop.run(goal)
+
+    def _make_branch(self, skills: SkillStore, session_key: str) -> Any:
+        """会话任务分支(M3-2):技能域 COW——base=全局 main 视图,sink=物化到
+        local:{session} 分支;manifest 与差异值入 CAS;生死入账。"""
+        from naga.branch import SessionBranch
+
+        def base_get(key: str) -> bytes | None:
+            if not key.startswith("skill:"):
+                return None
+            row = skills.get(key.removeprefix("skill:"))
+            return str(row[1]).encode() if row else None  # row[1]=content
+
+        def base_has(key: str) -> bool:
+            return base_get(key) is not None
+
+        def sink_put(key: str, content: bytes) -> None:
+            name = key.removeprefix("skill:")
+            skills.commit(name, content.decode("utf-8"),
+                          provenance={"source": "agent"},
+                          branch=f"local:{session_key}")
+
+        return SessionBranch(
+            owner_session=session_key,
+            base_get=base_get, base_has=base_has,
+            cas_put=self._ledger.cas.put, sink_put=sink_put,
+            ledger_append=lambda kind, owner, payload: self._ledger.append(
+                kind, owner, payload))
 
     async def _run_task(self, task: dict[str, Any]) -> None:
         result = await self.run_agent(session_key=str(task["session_key"]),

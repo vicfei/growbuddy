@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from naga import kernel
+from naga.branch import SessionBranch
 from naga.ledger_store import DurableLedger
 from naga.llm import ModelAdapter, ToolSpec, price_cents
 from naga.skills import SKILL_MAX_BYTES, SkillStore
@@ -50,7 +51,8 @@ class AgentLoop:
                  session_key: str = "cli:local:owner", model_id: str = "deepseek-v4-flash",
                  max_steps: int = 8, trace_id: str | None = None,
                  actor_trust: str | None = None,
-                 max_tokens: int = 8192, trace_parent: str | None = None):
+                 max_tokens: int = 8192, trace_parent: str | None = None,
+                 branch: SessionBranch | None = None):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
@@ -64,6 +66,7 @@ class AgentLoop:
         self._actor_trust = actor_trust
         self._max_tokens = max_tokens  # 推理模型:reasoning+content 共享上限,须给足
         self._trace_parent = trace_parent
+        self._branch = branch
         self._step_seq = 0
 
     # ---- 技能检索(local:{session} + main 双分支;拉丁词 + CJK 二元组) ----
@@ -193,6 +196,7 @@ class AgentLoop:
                     tokens += sed["tokens"]
                     cost += sed["cost_cents"]
                 trace = rec.finish(outcome="success", cost_tokens=tokens, cost_cents=cost)
+                self._settle_branch("commit", trace_id)
                 return AgentResult(reply=reply, outcome="success",
                                    trace_id=str(trace["trace_id"]), steps=self._step_seq,
                                    tokens=tokens, cost_cents=cost)
@@ -201,9 +205,23 @@ class AgentLoop:
             aborted = "预算耗尽"
         trace = rec.finish(outcome="aborted", cost_tokens=tokens, cost_cents=cost,
                            failure_analysis=aborted)
+        self._settle_branch("discard", trace_id)
         return AgentResult(reply=None, outcome="aborted",
                            trace_id=str(trace["trace_id"]), steps=self._step_seq,
                            tokens=tokens, cost_cents=cost, failure_analysis=aborted)
+
+    def _settle_branch(self, action: str, trace_id: str | None) -> None:
+        """任务末分支裁决(M3-2):根分支 commit/discard;子分支保持 open,
+        裁决权属父会话(§5.4 人走茶不凉)——父级联时一并处理。"""
+        if self._branch is None or self._branch.parent is not None:
+            return
+        try:
+            if action == "commit":
+                self._branch.commit(trace_id)
+            else:
+                self._branch.discard()
+        except ValueError:
+            pass  # 分支已被外部处置(如 owner 介入):尊重现状
 
     # ---- 技能沉淀(④ 类蒸馏调用,H.1;§6.4 默认局部) ----
     @staticmethod
@@ -247,10 +265,14 @@ class AgentLoop:
             content = data[:SKILL_MAX_BYTES - 1].decode("utf-8", errors="ignore") + "\n"
         ok = True
         try:
-            assert self._skills is not None
-            self._skills.commit(skill_id, content,
-                                provenance={"source": "agent", "trace_id": trace_id},
-                                branch=f"local:{self._session_key}")
+            if self._branch is not None:
+                # M3-2:沉淀写进会话分支(覆盖层),任务末由 commit 物化/discard 丢弃
+                self._branch.put(f"skill:{skill_id}", content.encode("utf-8"))
+            else:
+                assert self._skills is not None
+                self._skills.commit(skill_id, content,
+                                    provenance={"source": "agent", "trace_id": trace_id},
+                                    branch=f"local:{self._session_key}")
         except (ValueError, AssertionError):
             ok = False
         self._step_seq += 1

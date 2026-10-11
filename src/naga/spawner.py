@@ -30,6 +30,7 @@ from typing import Any, cast
 
 from naga import kernel
 from naga.agent import AgentLoop
+from naga.branch import SessionBranch
 from naga.gateway import tools_for_trust
 from naga.ledger_store import DurableLedger
 from naga.llm import ModelAdapter
@@ -53,7 +54,8 @@ class SubAgentSpawner:
                  raw_tools: list[Any], skill_store: SkillStore | None,
                  session_key: str, actor_trust: str | None,
                  budget: kernel.Budget, depth: int,
-                 parent_trace: str | None = None):
+                 parent_trace: str | None = None,
+                 branch: SessionBranch | None = None):
         self._ledger = ledger
         self._ctx = ctx
         self._make_adapter = make_adapter
@@ -63,6 +65,7 @@ class SubAgentSpawner:
         self._trust = actor_trust or "owner"
         self._budget = budget
         self._depth = depth
+        self._branch = branch
         self._parent_trace = parent_trace
 
     # ---- 工具集装配(不变式②:子 ⊆ 父,同一 R 过滤) ----
@@ -130,16 +133,20 @@ class SubAgentSpawner:
                          wall_ms: int) -> dict[str, Any]:
         agent_id = "ag_" + uuid.uuid4().hex[:12]
         trace_id = "tr_" + uuid.uuid4().hex[:24]
+        child_branch = (self._branch.spawn_child() if self._branch is not None
+                        and self._branch.state == "open" else None)  # kill:分支保持 open 待父裁决
         child = SubAgentSpawner(
             ledger=self._ledger, ctx=self._ctx, make_adapter=self._make_adapter,
             raw_tools=self._raw_tools, skill_store=self._skills,
             session_key=self._session_key, actor_trust=self._trust,
-            budget=budget, depth=self._depth + 1, parent_trace=trace_id)
+            budget=budget, depth=self._depth + 1, parent_trace=trace_id,
+            branch=child_branch)
         loop = AgentLoop(ledger=self._ledger, ctx=self._ctx, budget=budget,
                          adapter=self._make_adapter(), tools=child.make_tools(),
                          skill_store=self._skills, session_key=self._session_key,
                          trace_id=trace_id, actor_trust=self._trust,
-                         trace_parent=self._parent_trace)  # 子轨迹挂派生方轨迹
+                         trace_parent=self._parent_trace,  # 子轨迹挂派生方轨迹
+                         branch=child_branch)
         self._append("agent.spawned", agent_id, {
             "goal": goal, "budget_tokens": budget.total, "depth": self._depth + 1,
             "parent_trace": self._parent_trace, "session_key": self._session_key})
