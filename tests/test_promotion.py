@@ -164,7 +164,7 @@ def test_shadow_runs_leave_no_materialized_writes(tmp_path):
     storage.init_home(home)
     led = DurableLedger(home)
     verifier = ShadowVerifier(ledger=led, make_adapter=lambda: _SedimentingAdapter(),
-                              tools=[_Tool()])  # noqa: 脚本型 adapter 每次新实例
+                              tools=[_Tool()])
 
     async def scenario():
         return await verifier.verify("skill://c", "CANDIDATE 内容", ["g"])

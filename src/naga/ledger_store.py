@@ -246,6 +246,10 @@ class DurableLedger:
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
+    @property
+    def head_log_path(self) -> str:
+        return self._head_path
+
     # ---- 写路径 ----
     def append(self, kind: str, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
         entry = {

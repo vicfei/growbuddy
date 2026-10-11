@@ -186,6 +186,7 @@ class Gateway:
         self._wechat_request = wechat_request
         self._wechat: Any | None = None  # WeChatChannel(attach_wechat 注入,避免循环依赖)
         self._wechat_channels: dict[str, Any] = {}  # binder → 渠道(多绑定并行)
+        self.on_task_done: Any | None = None  # run_agent 完成回调(daemon 注入;M4a-2 自动晋升)
         self._wechat_factory: Callable[[Any], Any] | None = None  # 每凭据建渠道(daemon 注入)
         self._n_lanes = min(os.cpu_count() or 1, LANE_MAX_COUNT)
         self._queues: list[asyncio.Queue[dict[str, Any]]] = [
@@ -387,7 +388,14 @@ class Gateway:
                          skill_store=skills,
                          session_key=session_key, trace_id=trace_id,
                          actor_trust=actor_trust, branch=branch)
-        return await loop.run(goal)
+        try:
+            return await loop.run(goal)
+        finally:
+            if self.on_task_done is not None:
+                try:
+                    await self.on_task_done(session_key)  # 后台钩子:异常不杀任务
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
     def _make_branch(self, skills: SkillStore, session_key: str) -> Any:
         """会话任务分支(M3-2):技能域 COW——base=全局 main 视图,sink=物化到

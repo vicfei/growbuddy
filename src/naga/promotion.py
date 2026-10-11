@@ -18,7 +18,7 @@ import datetime
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from naga import kernel
 from naga.agent import AgentLoop
@@ -237,3 +237,62 @@ class PromotionPipeline:
         self._notify(f"{name} 晋升 main(R{r_level},影子 {report.verdict})")
         return PromotionResult(status="promoted", name=name,
                                r_level=r_level, shadow=report)
+
+
+def goals_from_bundles(ledger: DurableLedger, *, limit: int = 3,
+                       session_key: str | None = None) -> list[str]:
+    """从最近的 trace.record ReplayBundle 提取回放目标(§7.4"回放真实历史
+    轨迹"的字面化):bundle.session.inbound.text 即当年任务目标(已脱敏)。"""
+    goals: list[str] = []
+    with open(ledger.head_log_path, encoding="utf-8") as fh:
+        lines = fh.readlines()
+    for line in reversed(lines):  # 最近优先
+        if len(goals) >= limit:
+            break
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if obj.get("kind") != "trace.record":
+            continue
+        payload = cast("dict[str, Any]", obj.get("payload") or {})
+        if session_key and payload.get("session_key") != session_key:
+            continue
+        cas = payload.get("replay_bundle_cas")
+        if not cas:
+            continue
+        try:
+            bundle = json.loads(ledger.cas.get(str(cas)))
+            text = bundle.get("session", {}).get("inbound", {}).get("text")
+        except (OSError, ValueError):
+            continue
+        if isinstance(text, str) and text.strip():
+            goals.append(text.strip())
+    return goals
+
+
+def auto_trigger_candidates(ledger: DurableLedger, session_key: str,
+                            trigger_uses: int = 3) -> list[tuple[str, int]]:
+    """晋升自动触发条件:该会话局部分支上,uses 达阈值且未入 main/pending
+    的技能(返回 (name, uses);候选 spec-constants skill_promotion_trigger_uses)。"""
+    from naga.curator import scan_skill_events
+
+    events = scan_skill_events(ledger)
+    local_branch = f"local:{session_key}"
+    candidates: list[tuple[str, int]] = []
+    rows = ledger.query(
+        "SELECT s.name, s.cas_id FROM skill_nodes s JOIN "
+        "(SELECT name, MAX(version) AS v FROM skill_nodes WHERE branch=? "
+        " GROUP BY name) m ON s.name=m.name AND s.version=m.v AND s.branch=?",
+        (local_branch, local_branch))
+    in_main = {r[0] for r in ledger.query("SELECT name FROM skill_nodes "
+                                          "WHERE branch='main'")}
+    pending = {r[0] for r in ledger.query(
+        "SELECT name FROM promotion_requests WHERE status='pending'")}
+    for name, cas in rows:
+        if name in in_main or name in pending:
+            continue
+        uses = events["uses"].get(cas, 0)
+        if uses >= trigger_uses:
+            candidates.append((name, uses))
+    return candidates
