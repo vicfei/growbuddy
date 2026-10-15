@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS effects (
   compensable INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('applied','reverted','compensated','failed'))
 );
+CREATE TABLE IF NOT EXISTS workflows (
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  cas_id TEXT NOT NULL,
+  compiled_from TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (name, version)
+);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  run_id TEXT PRIMARY KEY,
+  workflow TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  detail TEXT,
+  started_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS model_scorecard (
   cluster TEXT NOT NULL,
   model TEXT NOT NULL,

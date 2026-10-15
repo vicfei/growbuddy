@@ -94,17 +94,17 @@ def test_child_budget_strictly_less_and_ratchets(tmp_path):
 
 
 def test_budget_must_be_strictly_less(tmp_path):
-    sp, led = _spawner(tmp_path, budget=100)
+    sp, led = _spawner(tmp_path, budget=100_000)
 
     async def scenario():
         with pytest.raises(SpawnRejected, match="配额不足"):
-            await sp.spawn_many([{"goal": "g", "budget_tokens": 100}])  # 不小于剩余
+            await sp.spawn_many([{"goal": "g", "budget_tokens": 100_000}])  # 不小于剩余
         with pytest.raises(SpawnRejected):
-            await sp.spawn_many([{"goal": "g", "budget_tokens": 99},
-                                 {"goal": "g2", "budget_tokens": 99}])  # 第二个必超
+            await sp.spawn_many([{"goal": "g", "budget_tokens": 99_000},
+                                 {"goal": "g2", "budget_tokens": 99_000}])  # 第二个必超
         return sp.budget.remaining
 
-    assert asyncio.run(scenario()) == 100  # 失败授权不留账:配额原封不动
+    assert asyncio.run(scenario()) == 100_000  # 失败授权不留账:配额原封不动
     led.close()
 
 

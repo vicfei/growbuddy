@@ -40,6 +40,9 @@ SPAWN_DEPTH_SOFT_LIMIT = 3  # candidate spec-constant spawn_depth_soft_limit (§
 SPAWN_DEPTH_HARD_CAP = 5    # candidate spec-constant spawn_depth_hard_cap (INC3)
 SPAWN_WALL_MS_DEFAULT = 120_000  # candidate spawn_wall_ms_default (R6-B13)
 SPAWN_CHILD_BUDGET_SHARE = 0.4   # §5.4 example tree: 子 ≤ 40% of parent pool
+SPAWN_MIN_PARENT_REMAINING = 4_000  # 候选 spawn_min_parent_remaining:父剩余低于地板
+                                     # 拒绝派生(碎屑配额只会产出必死子任务——真实
+                                     # 50 复用演示抓出:父搜索循环烧预算后派 3k 子)
 
 
 class SpawnRejected(ValueError):
@@ -99,6 +102,10 @@ class SubAgentSpawner:
                 f"派生深度超软限 {SPAWN_DEPTH_SOFT_LIMIT},需 owner 审批(审批队列表 M4)")
 
     def _child_budget(self, requested: int | None) -> int:
+        if self._budget.remaining < SPAWN_MIN_PARENT_REMAINING:
+            raise SpawnRejected(
+                f"父剩余 {self._budget.remaining} 低于派生地板 "
+                f"{SPAWN_MIN_PARENT_REMAINING},拒绝碎屑配额派生")
         if requested is not None and requested > 0:
             return requested  # 显式请求:allocate 强制"严格小于父剩余",违规即拒
         # 默认份额:父剩余的 40%,且严格小于父剩余(留父代自身余量)
@@ -123,6 +130,10 @@ class SubAgentSpawner:
                 for _, allocated, _ in specs:  # 失败授权不留账:整批回滚已划转
                     allocated.release()
                 raise SpawnRejected(f"配额不足: {err}") from None
+            except SpawnRejected:
+                for _, allocated, _ in specs:  # 地板拒绝同样整批回滚
+                    allocated.release()
+                raise
             specs.append((goal, child_budget, wall_ms))
         results = await asyncio.gather(
             *(self._run_child(goal, budget, wall_ms) for goal, budget, wall_ms in specs),
