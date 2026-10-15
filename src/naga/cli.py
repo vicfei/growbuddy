@@ -96,6 +96,51 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     return 0
 
 
+def _constitution_report(home: str) -> dict[str, Any]:
+    from naga import constitution
+    led = None
+    try:
+        led = DurableLedger(home)
+        report = constitution.evaluate()
+        report.anchored = constitution.anchored_sha(led)
+        anchored_match = (report.anchored is None
+                          or report.anchored == report.sha)
+        ok = report.ok and anchored_match
+        if not anchored_match:
+            report.violations = report.violations + ["宪法与账本锚定漂移"]
+        return {"ok": ok, "sha": report.sha,
+                "anchored_match": anchored_match,
+                "violations": report.violations}
+    except Exception as err:  # noqa: BLE001 —— 诊断只读:异常即报,不熔断
+        return {"ok": False, "sha": "", "anchored_match": False,
+                "violations": [f"{type(err).__name__}: {err}"]}
+    finally:
+        if led is not None:
+            led.close()
+
+
+def cmd_soak(args: argparse.Namespace) -> int:
+    """soak 报告:30 天时钟 / P0 计数 / 最近心跳(M5 出口①的日常视图)。"""
+    from naga.soak import soak_report
+    home = storage.resolve_home(args.home)
+    r = soak_report(home)
+    if args.json:
+        print(json.dumps(r, ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"soak: {r['days_elapsed']}/{r['target_days']} 天 "
+          f"(起始于 {r['started_at'] or '未启动'})")
+    print(f"P0: {r['p0_count']}")
+    from typing import cast
+    for ev in cast("list[dict[str, Any]]", r["p0_events"]):
+        print(f"  {ev['at']} {ev['kind']}: {ev['detail'][:60]}")
+    last = cast("dict[str, Any]", r.get("last_heartbeat") or {})
+    if last:
+        print(f"最近心跳: {last.get('at')} chain={'ok' if last.get('chain_ok') else 'FAIL'} "
+              f"disk={last.get('disk_free_mb')}MB issues={last.get('issues') or '无'}")
+    print(f"出口进度: {'达标待时' if r['days_elapsed'] < r['target_days'] and r['p0_count'] == 0 else ('ON TRACK' if r['on_track'] else 'P0 在案,出口受阻')}")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     home = storage.resolve_home(args.home)
     missing = [d for d in storage.LAYOUT_DIRS if not os.path.isdir(os.path.join(home, d))]
@@ -125,15 +170,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "layout": {"ok": layout_ok, "missing": missing},
         "ledger": ledger,
         "snapshots": {"count": len(snaps), "latest": snaps[-1] if snaps else None},
-        "constitution_hash": {"ok": None, "note": "M5 硬化议题,占位"},
+        "constitution": _constitution_report(home),
     }
-    ok = layout_ok and ledger["verify"] is True
+    ok = (layout_ok and ledger["verify"] is True
+          and payload["constitution"]["ok"])
     _emit(args, payload, "\n".join([
         f"home: {home}",
         f"layout: {'ok' if layout_ok else 'missing ' + ','.join(missing)}",
         f"ledger: {ledger['entries']} entries, verify={'ok' if ledger['verify'] else 'FAIL'}",
         f"snapshots: {len(snaps)} (latest: {snaps[-1] if snaps else '-'})",
-        "constitution hash: placeholder (M5)",
+        (f"constitution: {'ok' if payload['constitution']['ok'] else 'VIOLATION'} "
+        f"sha={payload['constitution']['sha'][:16]}… "
+        f"anchor={'match' if payload['constitution']['anchored_match'] else 'drift/none'}"),
         f"doctor: {'OK' if ok else 'FAIL'}",
     ]))
     return 0 if ok else 1
@@ -188,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--budget", type=int, default=200_000, help="token 预算上限")
     r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
     sub.add_parser("routing", help="模型路由仪表盘(M4b:节省/记分卡)")
+    sub.add_parser("soak", help="30 天 soak 报告(M5:P0/心跳)")
     args = parser.parse_args(argv)
     if args.cmd == "daemon":
         return cmd_daemon(args)
@@ -195,6 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.cmd == "routing":
         return cmd_routing(args)
+    if args.cmd == "soak":
+        return cmd_soak(args)
     return cmd_doctor(args)
 
 

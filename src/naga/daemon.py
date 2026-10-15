@@ -59,6 +59,30 @@ async def amain(home: str) -> int:
             os.remove(stale)
 
     led = DurableLedger.open(home)
+
+    # ── M5-1 宪法层:首启锚定,此后每次启动完整校验(违宪硬熔断,不带病运行)──
+    from naga import constitution, soak
+
+    if constitution.anchored_sha(led) is None:
+        sha = constitution.anchor(led, note="M5-1 首次锚定")
+        print(f"[constitution] 首次锚定 sha={sha[:16]}…", flush=True)
+    else:
+        report = constitution.verify(led)  # 违宪即 ConstitutionViolation
+        print(f"[constitution] 校验通过 {report.detail()}", flush=True)
+
+    # ── M5-2 soak:时钟幂等启动;上次非干净退出记 P0 ──
+    soak_state = soak.ensure_started(home)
+    if soak_state.get("started") and not soak_state.get("clean_shutdown", True):
+        soak.record_p0(home, "daemon-unclean-exit",
+                       "上次守护进程未优雅退出(SIGTERM 兜底未及/强杀)")
+        print("[soak] P0: 上次非干净退出已入账", flush=True)
+    soak_state["started"] = True
+    soak_state["clean_shutdown"] = False
+    soak.save(home, soak_state)
+    print(f"[soak] 时钟运行: {soak.soak_report(home)['days_elapsed']}/"
+          f"{soak.SOAK_DAYS} 天, P0={soak.soak_report(home)['p0_count']}",
+          flush=True)
+
     _write_marker(pidfile, str(os.getpid()))
 
     providers_path = os.path.join(home, "credentials", "providers.json")
@@ -197,6 +221,37 @@ async def amain(home: str) -> int:
 
     curator_task = asyncio.create_task(_curator_loop())
 
+    async def _health_loop() -> None:
+        while True:
+            await asyncio.sleep(soak.HEARTBEAT_SEC)
+            try:
+                channels = {b: bool(getattr(ch, "is_running", False))
+                            for b, ch in gateway.wechat_channels.items()}
+                health = await asyncio.to_thread(
+                    soak.health_check, led, channels, home)
+                await asyncio.to_thread(soak.record_heartbeat, home, health)
+                if health["p0"]:
+                    await asyncio.to_thread(soak.record_p0, home,
+                                            "heartbeat", ";".join(health["issues"]))
+                    print(f"[soak] P0 心跳检出: {health['issues']}", flush=True)
+            except Exception as err:  # noqa: BLE001 —— 心跳自身异常不杀守护
+                print(f"[soak] 心跳异常: {type(err).__name__}: {err}", flush=True)
+
+    async def _constitution_loop() -> None:
+        while True:
+            await asyncio.sleep(24 * 3600)  # 日巡检(§7.6 运行时校验)
+            try:
+                report = await asyncio.to_thread(constitution.verify, led)
+                print(f"[constitution] 日巡检通过 {report.sha[:16]}…", flush=True)
+            except constitution.ConstitutionViolation as err:
+                print(f"[constitution] CRITICAL 违宪熔断: {err}", flush=True)
+                await asyncio.to_thread(soak.record_p0, home,
+                                        "constitution-violation", str(err)[:200])
+                os.kill(os.getpid(), signal.SIGTERM)  # 硬熔断:优雅停机,不带病运行
+
+    health_task = asyncio.create_task(_health_loop())
+    constitution_task = asyncio.create_task(_constitution_loop())
+
     async def _gepa_loop() -> None:
         import time as _time
 
@@ -225,8 +280,8 @@ async def amain(home: str) -> int:
     loop.add_signal_handler(signal.SIGTERM, _on_term)
     await stop.wait()
 
-    curator_task.cancel()
-    gepa_task.cancel()
+    for t in (curator_task, gepa_task, health_task, constitution_task):
+        t.cancel()
     first_channel.stop()
     for ch in gateway.wechat_channels.values():
         ch.stop()
@@ -245,6 +300,9 @@ async def amain(home: str) -> int:
     except TimeoutError:
         print("[daemon] 清理超时(10s),强制退出(#39)")
 
+    final = soak.load_soak(home)
+    final["clean_shutdown"] = True  # 优雅退出旗标(下次启动核对)
+    soak.save(home, final)
     for marker in (ready, pidfile):
         if os.path.exists(marker):
             os.remove(marker)
