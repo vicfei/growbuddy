@@ -178,12 +178,14 @@ class Gateway:
                  default_budget: int = 200_000,
                  home: str | None = None,
                  wechat_request: Any | None = None,
-                 router: Any | None = None):
+                 router: Any | None = None,
+                 memory: Any | None = None):
         self._ledger = ledger
         self._make_adapter = make_adapter
         self._tools = tools or []
         self._default_budget = default_budget
         self._home = home
+        self._memory = memory  # MemoryStore(§6.5;缺省关记忆面)
         self._wechat_request = wechat_request
         self._router = router  # ModelRouter(M4b-1:任务级模型选型;缺省用 make_adapter)
         self._routing_bg: set[asyncio.Task[None]] = set()  # 影子探索后台任务(可等待)
@@ -305,6 +307,10 @@ class Gateway:
 
     async def _dispatch(self, req: dict[str, Any]) -> dict[str, Any]:
         method = req.get("method")
+        if method == "memory.list":
+            return self._memory_list(req)
+        if method == "memory.forget":
+            return await self._memory_forget(req)
         if method != "agent.run":
             raise GatewayError("GATE.METHOD_UNKNOWN", f"method {method!r} not in M1 set")
         params: dict[str, Any] = req.get("params") or {}
@@ -336,6 +342,59 @@ class Gateway:
             "INSERT OR REPLACE INTO idempotency_keys VALUES (?,?,?,?,?)",
             (ik, "agent.run", len(self._ledger.entries), cas,
              datetime.datetime.now(datetime.UTC).isoformat()))
+        return result
+
+    # ---- memory.* 方法面(接口 §3.2;回环=owner,INC4 owner 路径) ----
+
+    def _memory_list(self, req: dict[str, Any]) -> dict[str, Any]:
+        if self._memory is None:
+            raise GatewayError("GATE.METHOD_UNKNOWN", "memory 未启用")
+        params: dict[str, Any] = req.get("params") or {}
+        rows = self._memory.list_items(
+            session_key=str(params.get("session_key") or "") or None,
+            layer=str(params.get("layer") or "") or None,
+            status=str(params.get("status") or "") or None)
+        items = [{"cas_id": r[0], "layer": r[1], "session_key": r[2],
+                  "status": r[3], "created_at": r[4], "use_count": r[6]}
+                 for r in rows]
+        return {"items": items, "count": len(items)}
+
+    async def _memory_forget(self, req: dict[str, Any]) -> dict[str, Any]:
+        if self._memory is None:
+            raise GatewayError("GATE.METHOD_UNKNOWN", "memory 未启用")
+        params: dict[str, Any] = req.get("params") or {}
+        session_key = str(params.get("session_key") or "")
+        if not session_key:
+            raise GatewayError("GATE.PARAM_MISSING", "memory.forget 需要 session_key")
+        ik = str(req.get("idempotency_key") or "")
+        if not ik:
+            raise GatewayError("GATE.PARAM_MISSING", "副作用方法必须携带幂等键(接口 §2.2)")
+        cached = self._ledger.query(
+            "SELECT result_cas FROM idempotency_keys WHERE key=?", (ik,))
+        if cached and cached[0][0]:
+            return json.loads(self._ledger.cas.get(cached[0][0]))
+        try:
+            report = self._memory.forget(
+                session_key,
+                cas_id=str(params.get("cas_id") or "") or None,
+                since=str(params.get("since") or "") or None,
+                until=str(params.get("until") or "") or None,
+                actor="root", actor_trust="owner")  # 回环连接按 owner(B7)
+        except ValueError as err:
+            raise GatewayError("MEMORY.FORBIDDEN", str(err)) from err
+        result = {"forgotten": report.forgotten,
+                  "expires_at": report.expires_at,
+                  "rollback_hint": "托管期内可经 memory.forget.rollback 恢复"}
+        payload = json.dumps(result, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False).encode("utf-8")
+        cas = self._ledger.cas.put(payload)
+        self._ledger.execute(
+            "INSERT OR REPLACE INTO idempotency_keys VALUES (?,?,?,?,?)",
+            (ik, "memory.forget", len(self._ledger.entries), cas,
+             datetime.datetime.now(datetime.UTC).isoformat()))
+        await self._broadcast("memory.forgotten", {
+            "session_key": session_key, "count": report.forgotten,
+            "status": "forgotten", "kind": "memory.forgotten"})
         return result
 
     # ---- lane 消费者 ----
@@ -389,7 +448,7 @@ class Gateway:
         model_id = spec.model_id if spec is not None else None
 
         skills = SkillStore(self._ledger)
-        branch = self._make_branch(skills, session_key)
+        branch = self._make_branch(skills, session_key, actor_trust, trace_id)
 
         spawner = SubAgentSpawner(
             ledger=self._ledger, ctx=kern.root, make_adapter=make_adapter,
@@ -403,7 +462,8 @@ class Gateway:
                          skill_store=skills,
                          session_key=session_key, trace_id=trace_id,
                          actor_trust=actor_trust, branch=branch,
-                         model_id=model_id or "deepseek-v4-flash")
+                         model_id=model_id or "deepseek-v4-flash",
+                         memory_store=self._memory)
         try:
             result = await loop.run(goal)
             if self._router is not None and spec is not None:
@@ -443,25 +503,42 @@ class Gateway:
             print(f"[routing] 记账/探索异常: {type(err).__name__}: {err}",
                   flush=True)
 
-    def _make_branch(self, skills: SkillStore, session_key: str) -> Any:
+    def _make_branch(self, skills: SkillStore, session_key: str,
+                     actor_trust: str | None = None,
+                     trace_id: str | None = None) -> Any:
         """会话任务分支(M3-2):技能域 COW——base=全局 main 视图,sink=物化到
-        local:{session} 分支;manifest 与差异值入 CAS;生死入账。"""
+        local:{session} 分支;manifest 与差异值入 CAS;生死入账。
+        §6.5:记忆域同机制——memory:{layer}:{id} 键 commit 才物化(闸门在
+        MemoryStore 单点;坏条目丢弃不阻断结算)。"""
         from naga.branch import SessionBranch
 
         def base_get(key: str) -> bytes | None:
             if not key.startswith("skill:"):
-                return None
+                return None  # 记忆键无全局 base diff(每次提炼即差异)
             row = skills.get(key.removeprefix("skill:"))
             return str(row[1]).encode() if row else None  # row[1]=content
 
         def base_has(key: str) -> bool:
             return base_get(key) is not None
 
-        def sink_put(key: str, content: bytes) -> None:
+        def sink_put(key: str, content: bytes) -> str | None:
+            if key.startswith("memory:"):
+                if self._memory is None:
+                    return "memory:disabled"
+                _, layer, _item = key.split(":", 2)
+                try:
+                    # 返回密文 CAS(manifest 只引用密文,K.6);绝不可回落
+                    # branch 自持——那会把明文写进 CAS
+                    return str(self._memory.write(
+                        layer, session_key, content.decode("utf-8"),
+                        {"source": "agent", "trace_id": trace_id},
+                        actor_trust=actor_trust))
+                except ValueError:
+                    return "memory:gate-rejected"  # 闸门/体检拒绝:丢该条,不阻断结算
             name = key.removeprefix("skill:")
-            skills.commit(name, content.decode("utf-8"),
-                          provenance={"source": "agent"},
-                          branch=f"local:{session_key}")
+            return skills.commit(name, content.decode("utf-8"),
+                                 provenance={"source": "agent"},
+                                 branch=f"local:{session_key}")
 
         return SessionBranch(
             owner_session=session_key,

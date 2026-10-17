@@ -38,7 +38,7 @@ def test_roundtrip_small_and_large_payloads(tmp_path):
 def test_cas_externalization_inline_threshold(tmp_path):
     home = str(tmp_path / "home")
     led = DurableLedger(home)
-    led.append("memory.write", "f0001", {"blob": "z" * 4096})
+    led.append("plugin.install", "f0001", {"blob": "z" * 4096})
     led.close()
 
     with open(os.path.join(home, "ledger", "head.log"), encoding="utf-8") as fh:

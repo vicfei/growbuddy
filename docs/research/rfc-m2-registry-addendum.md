@@ -80,6 +80,22 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   closure-ledger.yaml RFC23-B2。原积压条目(skill.stale/archived、
   skill_promotion_trigger_uses)及其后 M4a-3/M4b/M5-1 新增候选全部随单裁决。
 
+## E''. 第三单积压(记忆系统 §6.5,2026-10-18,issue #81)——待批
+
+- **additive kind 三条**(DM §3.1 枚举扩展候选,与 skill.use/stale/archived
+  同路径):`memory.use`(召回计量,检索质量进 L3)、`memory.stale`、
+  `memory.archived`(Curator 保鲜状态机,DM B.3 R6-B10)。既有
+  `memory.write|forget|forget.rollback` 已在冻结枚举,无需裁决。
+- **spec-constants 六条**(RFC 权威类候选):memory_max_bytes=16384 /
+  memory_inject_max_chars=2000 / memory_recall_limit=5 /
+  memory_distill_min_tool_calls=1 / memory_consolidate_min_recurrence=3 /
+  memory_consolidate_similarity=0.5(实现值见 naga/memory.py 模块头)。
+- **实现偏差记录**(供裁决):①读路径为确定性关键词召回,embedding 召回+
+  中小模型重排(§6.5 原文形态)留待嵌入供应方落地;②semantic 非 owner
+  写入当前为直接拒绝,"人审"路径(晋升请求队列形态)待模式系统接入;
+  ③遗忘回滚将条目恢复为 active(而非遗忘前原状态,Curator 会按闲置重新
+  归档);④记忆写闸门未入宪法锚点(避免重锚定,候选 R5 条款)。
+
 ## E. 建议处置
 
 1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入

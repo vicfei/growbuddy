@@ -25,7 +25,7 @@ KINDS = [
     "effect.revert",
     "session.open",
     "job.fire",
-    "memory.write",
+    "job.missed",
 ]
 
 ops_strategy = st.lists(

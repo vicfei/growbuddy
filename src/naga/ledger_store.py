@@ -114,6 +114,18 @@ CREATE TABLE IF NOT EXISTS skill_nodes (
   size_bytes INTEGER NOT NULL CHECK (size_bytes <= 15360)
 );
 CREATE INDEX IF NOT EXISTS idx_skill_lookup ON skill_nodes(name, branch, status);
+CREATE TABLE IF NOT EXISTS memory_items (  -- 数据模型 §4 B.3(冻结 DDL 原文)
+  cas_id TEXT PRIMARY KEY,
+  layer TEXT NOT NULL CHECK (layer IN ('working','episodic','semantic')),
+  session_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','stale','archived','forgotten')),
+  provenance TEXT NOT NULL,
+  created_at TEXT NOT NULL,              -- R6-B10:Curator 状态机时间依据(ISO8601)
+  last_used_at TEXT NOT NULL,            -- R6-B10:空闲判定依据(字典序=时间序)
+  use_count INTEGER NOT NULL DEFAULT 0,  -- R6-B10:使用度
+  forgotten_seq INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_items(session_key, layer, status);
 CREATE TABLE IF NOT EXISTS traces (      -- M1 SQLite 镜像(Parquet 主存随 M2/M4,见 issue #23)
   trace_id TEXT PRIMARY KEY,
   session_key TEXT NOT NULL,
@@ -412,6 +424,31 @@ class DurableLedger:
             metrics["lastUsed"] = _iso(entry["ts"])  # 以条目 ts 为准——重放确定性
             self._db.execute("UPDATE skill_nodes SET metrics_json=? WHERE cas_id=?",
                              (_canonical(metrics), p["cas_id"]))
+        elif k == "memory.write":
+            self._db.execute(
+                "INSERT OR REPLACE INTO memory_items VALUES (?,?,?,?,?,?,?,?,?)",
+                (p["cas_id"], p["layer"], p["session_key"], "active",
+                 p["provenance"] if isinstance(p["provenance"], str)
+                 else _canonical(p["provenance"]),
+                 _iso(entry["ts"]), _iso(entry["ts"]), 0, None))
+        elif k == "memory.forget" and "cas_ids" in p:
+            for cas in p["cas_ids"]:
+                self._db.execute(
+                    "UPDATE memory_items SET status='forgotten', forgotten_seq=? "
+                    "WHERE cas_id=?", (entry["seq"], cas))
+        elif k == "memory.forget.rollback" and "cas_ids" in p:
+            for cas in p["cas_ids"]:
+                self._db.execute(
+                    "UPDATE memory_items SET status='active', forgotten_seq=NULL "
+                    "WHERE cas_id=?", (cas,))
+        elif k == "memory.use" and "cas_ids" in p:
+            for cas in p["cas_ids"]:
+                self._db.execute(
+                    "UPDATE memory_items SET last_used_at=?, use_count=use_count+1 "
+                    "WHERE cas_id=?", (_iso(entry["ts"]), cas))
+        elif k in ("memory.stale", "memory.archived") and "cas_id" in p:
+            self._db.execute("UPDATE memory_items SET status=? WHERE cas_id=?",
+                             (k.removeprefix("memory."), p["cas_id"]))
         elif k == "trace.record":
             cost: dict[str, Any] = p.get("cost") or {}
             self._db.execute(

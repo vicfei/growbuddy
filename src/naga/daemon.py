@@ -110,8 +110,10 @@ async def amain(home: str) -> int:
                                api_key=dash_cfg.api_key), "qwen-flash")))
     registry = ModelRegistry(registry_specs)
     router = ModelRouter(registry=registry, ledger=led, tools=tools)
+    from naga.memory import MemoryStore
+    memory = MemoryStore(led, home=home)  # §6.5 记忆面(召回注入/收尾提炼/遗忘)
     gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home,
-                      router=router)
+                      router=router, memory=memory)
 
     # 微信渠道:runner 经网关 lane(会话路由单一权威);guest 预算封顶(§10.1 首项)
     from naga.wechat import WeChatChannel
@@ -183,10 +185,14 @@ async def amain(home: str) -> int:
 
     async def _curator_sweep() -> None:
         report = await asyncio.to_thread(
-            Curator(ledger=led, skills=SkillStore(led)).sweep)
+            Curator(ledger=led, skills=SkillStore(led), memory=memory).sweep)
         if report.changed:
             print(f"[curator] stale={report.to_stale} "
-                  f"archived={report.to_archived}", flush=True)
+                  f"archived={report.to_archived} "
+                  f"mem_stale={len(report.memory_stale)} "
+                  f"mem_archived={len(report.memory_archived)} "
+                  f"consolidated={report.consolidated} "
+                  f"escrow_destroyed={report.escrow_destroyed}", flush=True)
 
     promotion_pipeline = PromotionPipeline(
         ledger=led, shadow=ShadowVerifier(ledger=led,

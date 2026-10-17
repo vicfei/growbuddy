@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from naga.ledger_store import DurableLedger
+from naga.memory import MemoryStore
 from naga.skills import SkillStore
 
 CURATOR_STALE_DAYS = 30        # 主文档 §6.3 状态机(30 天未用 → stale)
@@ -100,19 +101,31 @@ class CuratorReport:
     to_stale: list[str] = field(default_factory=list[str])
     to_archived: list[str] = field(default_factory=list[str])
     skipped_non_agent: int = 0
+    memory_stale: list[str] = field(default_factory=list[str])
+    memory_archived: list[str] = field(default_factory=list[str])
+    consolidated: int = 0
+    escrow_destroyed: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.to_stale or self.to_archived)
+        return bool(self.to_stale or self.to_archived or self.memory_stale
+                    or self.memory_archived or self.consolidated)
 
 
 class Curator:
-    """保鲜进程:按状态机迁移 agent 自创技能;幂等(已迁移者不再动)。"""
+    """保鲜进程:按状态机迁移 agent 自创技能;幂等(已迁移者不再动)。
+
+    记忆域(§6.5):同样的状态机(active→stale→archived,时间依据=
+    memory_items.last_used_at,DM B.3 R6-B10)+ 巩固(情景高频复现 →
+    提议晋升语义)+ 托管到期销毁(K.6)。memory=None 时跳过记忆域
+    (旧装配兼容)。"""
 
     def __init__(self, *, ledger: DurableLedger, skills: SkillStore,
+                 memory: MemoryStore | None = None,
                  now: datetime.datetime | None = None):
         self._ledger = ledger
         self._skills = skills
+        self._memory = memory
         self._now = now or datetime.datetime.now(datetime.UTC)
 
     def sweep(self) -> CuratorReport:
@@ -151,4 +164,30 @@ class Curator:
                 self._skills.set_status(name, "archived", branch=branch,
                                         reason=f"{idle_days} 天未用")
                 report.to_archived.append(label)
+        if self._memory is not None:
+            self._sweep_memory(report)
         return report
+
+    def _sweep_memory(self, report: CuratorReport) -> None:
+        """记忆域巡检:保鲜状态机 + 巩固提议 + 托管到期销毁(K.6)。"""
+        assert self._memory is not None
+        for cas, status, last_used in self._ledger.query(
+                "SELECT cas_id, status, last_used_at FROM memory_items "
+                "WHERE status IN ('active','stale')"):
+            last = _parse_ts(str(last_used))
+            if last is None:
+                continue
+            idle_days = (self._now - last).days
+            label = f"{cas[:18]}…"
+            if status == "active" and idle_days > CURATOR_STALE_DAYS:
+                self._memory.set_status(str(cas), "stale",
+                                        reason=f"{idle_days} 天未用")
+                report.memory_stale.append(label)
+            elif status == "stale" and idle_days > CURATOR_ARCHIVE_DAYS:
+                self._memory.set_status(str(cas), "archived",
+                                        reason=f"{idle_days} 天未用")
+                report.memory_archived.append(label)
+        for candidate in self._memory.consolidation_candidates():
+            if self._memory.consolidate(candidate) is not None:
+                report.consolidated += 1
+        report.escrow_destroyed = len(self._memory.destroy_expired_escrow())

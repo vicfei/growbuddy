@@ -27,7 +27,7 @@ KINDS = [
     "effect.revert",
     "session.open",
     "job.fire",
-    "memory.write",
+    "job.missed",
 ]
 
 
