@@ -96,6 +96,20 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   ③遗忘回滚将条目恢复为 active(而非遗忘前原状态,Curator 会按闲置重新
   归档);④记忆写闸门未入宪法锚点(避免重锚定,候选 R5 条款)。
 
+## E'''. 第三单追加(定时任务附录 C,2026-10-18,issue #83)——待批
+
+- **additive kind 五条**(同上路径):`job.created` / `job.paused` /
+  `job.resumed` / `job.deleted` / `job.renewed`。既有 `job.fire|missed`
+  已在冻结枚举,无需裁决。
+- **spec-constants 四条**(RFC 权威类候选):job_scheduler_tick_seconds=30 /
+  job_default_budget_tokens=200000 / job_goal_max_bytes=4096 /
+  job_wall_ms_default=1800000(C.2 示例值;实现值见 naga/jobs.py 模块头)。
+- **实现偏差记录**(供裁决):①rCeiling 以任务级工具集收紧实现(叠在
+  宪法信任档位之上,单向更严),宪法锚点未动;②smart 通知当前=立即
+  broadcast job.completed(注意力路由器裁决时机属后续;凌晨进晨报未做);
+  ③微信渠道的任务结果投递待会话注册表(session→channel 映射)批次;
+  ④守护停机错过窗口以账本 last-fire 推算,精度=调度 tick 粒度。
+
 ## E. 建议处置
 
 1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入
