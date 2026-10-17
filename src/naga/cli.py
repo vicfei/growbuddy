@@ -390,6 +390,19 @@ def cmd_job(args: argparse.Namespace) -> int:
             if args.state:
                 params["state"] = args.state
             result = asyncio.run(_ws_call("job.list", params))
+            if not args.state:  # #87:默认视图隐藏已删(--state 可显式查看)
+                raw_items: object = result.get("items")
+                source: list[Any] = (cast("list[Any]", raw_items)
+                                     if isinstance(raw_items, list) else [])
+                items: list[Any] = []
+                for entry in source:
+                    if isinstance(entry, dict):
+                        item = cast("dict[str, Any]", entry)
+                        if item.get("state") != "deleted":
+                            items.append(item)
+                merged: dict[str, Any] = {**result, "items": items,
+                                          "count": len(items)}
+                result = merged
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, sort_keys=True))
                 return 0

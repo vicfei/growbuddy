@@ -29,6 +29,17 @@
   .wx-binding button { color: #c0392b; border: 1px solid #c0392b; background: #fff;
                        padding: .15rem .6rem; border-radius: 6px; cursor: pointer;
                        font-size: .8rem; }
+  /* 路由仪表盘面板(M4b 节省仪表盘的 WebChat 视图) */
+  details.rt { margin-top: 1.2rem; padding: .6rem .9rem; border: 1px dashed #ccc;
+               border-radius: 8px; }
+  details.rt summary { cursor: pointer; color: #555; }
+  .rt .kv { margin: .5rem 0; font-size: .9rem; }
+  .rt table { border-collapse: collapse; font-size: .82rem; margin-top: .4rem; }
+  .rt td, .rt th { border: 1px solid #eee; padding: .15rem .5rem; text-align: left; }
+  .rt .hint { color: #888; font-size: .85rem; }
+  .rt button { color: #07c; border: 1px solid #ccc; background: #fff;
+               padding: .15rem .6rem; border-radius: 6px; cursor: pointer;
+               font-size: .8rem; margin-left: .6rem; }
 </style>
 </head>
 <body>
@@ -49,6 +60,11 @@
     <div class="status" id="wxPoll"></div>
   </div>
 </div>
+
+<details class="rt" id="routingPanel">
+  <summary>🧭 路由仪表盘(M4b:模型自动路由节省)</summary>
+  <div class="kv" id="routingBody"><span class="hint">加载中…</span></div>
+</details>
 
 <script>
 const logEl = document.getElementById("log");
@@ -172,7 +188,75 @@ async function wxUnbindOne(binder) {
   wxCheck();
 }
 
+/* ── 路由仪表盘(/routing/stats 的页面视图;未启用则降级提示) ── */
+const rtBody = document.getElementById("routingBody");
+const rtPanel = document.getElementById("routingPanel");
+function rtLine(label, value) {
+  const row = document.createElement("div");
+  const b = document.createElement("b");
+  b.textContent = label + ":";
+  row.append(b, " " + value);
+  return row;
+}
+function rtTable(headers, rows) {
+  const t = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const h of headers) {
+    const th = document.createElement("th"); th.textContent = h; head.appendChild(th);
+  }
+  t.appendChild(head);
+  for (const cells of rows) {
+    const tr = document.createElement("tr");
+    for (const c of cells) {
+      const td = document.createElement("td"); td.textContent = c; tr.appendChild(td);
+    }
+    t.appendChild(tr);
+  }
+  return t;
+}
+async function routingLoad() {
+  rtBody.textContent = "";
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "加载中…";
+  rtBody.appendChild(hint);
+  try {
+    const r = await fetch("/routing/stats");
+    if (!r.ok) {
+      hint.textContent = "路由未启用(daemon 无 /routing/stats)";
+      return;
+    }
+    const j = await r.json();
+    rtBody.textContent = "";
+    rtBody.appendChild(rtLine("净节省",
+      `${j.net_savings_micro_cents} µ¢(毛省 ${j.gross_savings_micro_cents}`
+      + ` − 探索 ${j.exploration_spend_micro_cents})`));
+    rtBody.appendChild(rtLine("任务数", j.tasks));
+    rtBody.appendChild(rtLine("价格表", j.price_table_version));
+    if (Object.keys(j.per_model ?? {}).length) {
+      rtBody.appendChild(rtTable(
+        ["模型", "任务", "影子", "tokens", "实际 µ¢"],
+        Object.entries(j.per_model).map(([m, e]) =>
+          [m, e.tasks, e.shadow_runs, e.tokens,
+           Math.round(e.actual_micro_cents * 1000) / 1000])));
+    }
+    if ((j.scorecard ?? []).length) {
+      const cap = document.createElement("div");
+      cap.textContent = "记分卡(簇 × 模型:成功/失败,影子胜/负):";
+      rtBody.appendChild(cap);
+      rtBody.appendChild(rtTable(
+        ["簇", "模型", "成/败", "影子胜/负"],
+        j.scorecard.map(([c, m, s, f, w, l]) => [c, m, `${s}/${f}`, `${w}/${l}`])));
+    }
+  } catch (e) {
+    hint.textContent = "查询失败: " + e;
+  }
+}
+rtPanel.addEventListener("toggle", () => { if (rtPanel.open) routingLoad(); });
+if (rtPanel.open) routingLoad();
+
 wxCheck();
+
 </script>
 </body>
 </html>
