@@ -237,16 +237,82 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
     sub.add_parser("routing", help="模型路由仪表盘(M4b:节省/记分卡)")
     sub.add_parser("soak", help="30 天 soak 报告(M5:P0/心跳)")
+    m = sub.add_parser("memory", help="记忆面(§6.5:list/show/forget)")
+    m.add_argument("action", choices=["list", "show", "forget"])
+    m.add_argument("target", nargs="?",
+                   help="show 的 cas_id / forget 的 session_key")
+    m.add_argument("--cas-id", help="forget 精确到单条(可选)")
+    m.add_argument("--session-key", help="list 按会话键过滤")
+    m.add_argument("--layer", help="episodic|semantic")
+    m.add_argument("--status", help="active|stale|archived|forgotten")
+    m.add_argument("--since", help="遗忘窗口起(ISO8601,含)")
+    m.add_argument("--until", help="遗忘窗口止(ISO8601,含)")
     args = parser.parse_args(argv)
     if args.cmd == "daemon":
         return cmd_daemon(args)
     if args.cmd == "run":
         return cmd_run(args)
+    if args.cmd == "memory":
+        return cmd_memory(args)
     if args.cmd == "routing":
         return cmd_routing(args)
     if args.cmd == "soak":
         return cmd_soak(args)
     return cmd_doctor(args)
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """记忆面(§6.5):list 元数据 / show 解密单条 / forget 精确遗忘。"""
+    from naga.memory import MemoryStore
+
+    home = storage.resolve_home(args.home)
+    led = DurableLedger.open(home)
+    try:
+        store = MemoryStore(led, home=home)
+        if args.action == "list":
+            rows = store.list_items(session_key=args.session_key or None,
+                                    layer=args.layer or None,
+                                    status=args.status or None)
+            if args.json:
+                print(json.dumps(
+                    [{"cas_id": r[0], "layer": r[1], "session_key": r[2],
+                      "status": r[3], "created_at": r[4], "use_count": r[6]}
+                     for r in rows], ensure_ascii=False, sort_keys=True))
+                return 0
+            print(f"memory: {len(rows)} 条"
+                  + (f"(session={args.session_key})" if args.session_key else ""))
+            for r in rows:
+                print(f"  {str(r[0])[:22]}… [{r[1]}] {r[3]} uses={r[6]} "
+                      f"created={r[4]}")
+            return 0
+        if args.action == "show":
+            if not args.target:
+                print("memory show 需要 cas_id", file=sys.stderr)
+                return 2
+            content = store.read_content(args.target)
+            if content is None:
+                print(f"memory: {args.target} 不可读(不存在或已遗忘)")
+                return 1
+            print(content)
+            return 0
+        # forget:target=session_key
+        if not args.target:
+            print("memory forget 需要 session_key", file=sys.stderr)
+            return 2
+        report = store.forget(args.target, cas_id=args.cas_id or None,
+                              since=args.since, until=args.until,
+                              actor="cli-owner", actor_trust="owner")
+        if args.json:
+            print(json.dumps({"forgotten": report.forgotten,
+                              "expires_at": report.expires_at,
+                              "cas_ids": report.cas_ids},
+                             ensure_ascii=False, sort_keys=True))
+        else:
+            print(f"memory: 已遗忘 {report.forgotten} 条"
+                  f"(托管到期 {report.expires_at},期间可回滚)")
+        return 0
+    finally:
+        led.close()
 
 
 def cmd_routing(args: argparse.Namespace) -> int:

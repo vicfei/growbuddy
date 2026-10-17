@@ -22,6 +22,13 @@ from naga import kernel
 from naga.branch import SessionBranch
 from naga.ledger_store import DurableLedger
 from naga.llm import ModelAdapter, ToolSpec, price_cents
+from naga.memory import (
+    MEMORY_DISTILL_MIN_TOOL_CALLS,
+    MemoryStore,
+    new_memory_id,
+    parse_distilled,
+    render_memory_section,
+)
 from naga.skills import SKILL_MAX_BYTES, SkillStore
 from naga.trace import TraceRecorder
 
@@ -74,13 +81,15 @@ class AgentLoop:
                  max_tokens: int = 8192, trace_parent: str | None = None,
                  branch: SessionBranch | None = None,
                  forced_skills: list[tuple[str, str]] | None = None,
-                 meter_skills: bool = True):
+                 meter_skills: bool = True,
+                 memory_store: MemoryStore | None = None):
         self._ledger = ledger
         self._ctx = ctx
         self._budget = budget
         self._adapter = adapter
         self._tools = {t.name: t for t in (tools or [])}
         self._skills = skill_store
+        self._memory = memory_store
         self._session_key = session_key
         self._model_id = model_id
         self._max_steps = max_steps
@@ -130,11 +139,14 @@ class AgentLoop:
         return [(uri, content) for _, uri, _, content in picked]
 
     def _system_prompt(self, skills: list[tuple[str, str]],
-                       forced: list[tuple[str, str]] | None = None) -> str:
+                       forced: list[tuple[str, str]] | None = None,
+                       memory_block: str = "") -> str:
         lines = [
             ("你是 Naga(Samsara Python 路线)的任务执行智能体。"
              "能直接回答时直接回答;需要外部事实或资料时调用工具。"),
         ]
+        if memory_block:
+            lines += ["", memory_block]  # §6.5 读取路径:召回注入(背景上下文)
         sections = [(uri, content) for uri, content in skills]
         if forced:
             sections = forced + sections  # 影子验证:候选强制注入(不受检索命中约束)
@@ -169,9 +181,12 @@ class AgentLoop:
 
     async def run(self, goal: str) -> AgentResult:
         skills = self._select_skills(goal)
+        memories = (self._memory.recall(self._session_key, goal)
+                    if self._memory is not None else [])
         loaded_uris = [uri for uri, _ in skills] + [uri for uri, _ in self._forced]
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self._system_prompt(skills, self._forced)},
+            {"role": "system", "content": self._system_prompt(
+                skills, self._forced, render_memory_section(memories))},
             {"role": "user", "content": goal},
         ]
         tool_specs = [ToolSpec(name=t.name, description=t.description,
@@ -183,7 +198,8 @@ class AgentLoop:
                             skills_loaded=loaded_uris,
                             env={"model": self._model_id,
                                  "channel": self._session_key.split(":", 1)[0],
-                                 "actor_trust": self._actor_trust},
+                                 "actor_trust": self._actor_trust,
+                                 "memories": [m.cas_id for m in memories]},
                             parent_trace=self._trace_parent)
         self._step_seq = 0
         self._tool_steps = 0
@@ -233,6 +249,10 @@ class AgentLoop:
                     sed = await self._sediment(goal, reply, rec, trace_id)
                     tokens += sed["tokens"]
                     cost += sed["cost_cents"]
+                if self._memory is not None and self._tool_steps >= MEMORY_DISTILL_MIN_TOOL_CALLS:
+                    mem = await self._memorize(goal, reply, rec, trace_id)
+                    tokens += mem["tokens"]
+                    cost += mem["cost_cents"]
                 trace = rec.finish(outcome="success", cost_tokens=tokens,
                              cost_cents=cost,
                              task_cluster=cluster_of(goal))
@@ -321,3 +341,64 @@ class AgentLoop:
                  int((time.monotonic() - t0) * 1000), usage,
                  args={"goal": goal}, results={"skill": skill_id if ok else None})
         return {"tokens": usage, "cost_cents": price_cents(self._model_id, usage, 0)}
+
+    # ---- 记忆提炼(④ 类调用 1 次,§6.5 情景层;semantic 仅 owner) ----
+    async def _memorize(self, goal: str, reply: str, rec: TraceRecorder,
+                        trace_id: str) -> dict[str, int]:
+        """任务收尾提炼:一次 LLM 调用产出 `[E]` 事件摘要(全信任级)与
+        `[S]` 长期事实(仅 owner 采纳);写经会话分支 COW(§6.5 并行语义,
+        commit 才物化——aborted 任务本就不走此路径,discard 亦不留记忆)。"""
+        t0 = time.monotonic()
+        prompt = (
+            "根据以下任务执行记录提炼记忆。\n"
+            "第一行:[E] <本次任务的一句话事件摘要(做了什么、结果如何,40字内)>\n"
+            "随后每行一条:[S] <值得长期记住的用户偏好或事实>(最多3条,没有就不输出)\n"
+            "只输出以上行,不要多余解释。\n\n"
+            f"任务:{goal}\n"
+            f"执行记录:{json.dumps(self._tool_log, ensure_ascii=False, default=str)}\n"
+            f"最终结果:{reply}")
+        try:
+            resp = await self._adapter.chat([{"role": "user", "content": prompt}],
+                                            None, max_tokens=self._max_tokens)
+        except kernel.QuotaExhausted:
+            self._step_seq += 1
+            rec.step(self._step_seq, "llm", "memory-distill", False,
+                     int((time.monotonic() - t0) * 1000), 0,
+                     args={"goal": goal}, results={"error": "预算耗尽,跳过提炼"})
+            return {"tokens": 0, "cost_cents": 0}
+        usage = resp.prompt_tokens + resp.completion_tokens
+        try:
+            self._budget.consume(usage)
+        except kernel.QuotaExhausted:
+            return {"tokens": 0, "cost_cents": 0}
+        episodic, semantic = parse_distilled((resp.content or "").strip())
+        if self._actor_trust not in (None, "owner"):
+            semantic = []  # §6.5 写入闸门:非 owner 的 [S] 不采纳(store 兜底)
+        written = 0
+        if episodic:
+            written += self._memory_put("episodic", episodic, trace_id)
+        for fact in semantic:
+            written += self._memory_put("semantic", fact, trace_id)
+        self._step_seq += 1
+        rec.step(self._step_seq, "llm", "memory-distill", True,
+                 int((time.monotonic() - t0) * 1000), usage,
+                 args={"goal": goal},
+                 results={"items": written, "episodic": bool(episodic),
+                          "semantic": len(semantic)})
+        return {"tokens": usage,
+                "cost_cents": price_cents(self._model_id, usage, 0)}
+
+    def _memory_put(self, layer: str, content: str, trace_id: str) -> int:
+        """单条落地:有分支走 COW(commit 物化),无分支直写(与 _sediment 同构)。"""
+        assert self._memory is not None  # 调用点已判空
+        provenance = {"source": "agent", "trace_id": trace_id}
+        try:
+            if self._branch is not None:
+                self._branch.put(
+                    f"memory:{layer}:{new_memory_id()}", content.encode("utf-8"))
+                return 1
+            self._memory.write(layer, self._session_key, content, provenance,
+                               actor_trust=self._actor_trust)
+            return 1
+        except (ValueError, OSError):
+            return 0  # 闸门/体检/尺寸拒绝:跳过该条,不杀任务
