@@ -145,6 +145,21 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (  -- GAP8:副作用方法去重缓�
   result_cas TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS jobs (      -- 数据模型 §5 DDL(附录 C.3,冻结原文)
+  id TEXT PRIMARY KEY,
+  schedule_cron TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  goal_cas TEXT NOT NULL,
+  trust_snapshot TEXT NOT NULL,
+  budget_json TEXT NOT NULL,
+  r_ceiling TEXT NOT NULL,
+  notification TEXT NOT NULL DEFAULT 'smart',
+  misfire TEXT NOT NULL DEFAULT 'skip' CHECK (misfire IN ('skip','runOnce','catchUp')),
+  expires_at TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  CHECK (r_ceiling IN ('R0','R1','R2','R3','R4')),
+  CHECK (r_ceiling IN ('R0','R1','R2') OR expires_at IS NOT NULL)
+);
 """
 
 _SNAP_RE = re.compile(r"^snapshot_(\d+)\.tar\.zst$")
@@ -449,6 +464,24 @@ class DurableLedger:
         elif k in ("memory.stale", "memory.archived") and "cas_id" in p:
             self._db.execute("UPDATE memory_items SET status=? WHERE cas_id=?",
                              (k.removeprefix("memory."), p["cas_id"]))
+        elif k == "job.created":
+            self._db.execute(
+                "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (p["id"], p["schedule_cron"], p["timezone"], p["goal_cas"],
+                 p["trust_snapshot"],
+                 _canonical(p["budget"]) if not isinstance(p["budget"], str)
+                 else p["budget"],
+                 p["r_ceiling"], p.get("notification", "smart"),
+                 p.get("misfire", "skip"), p.get("expires_at"), "active"))
+        elif k == "job.paused" and "id" in p:
+            self._db.execute("UPDATE jobs SET state='paused' WHERE id=?", (p["id"],))
+        elif k == "job.resumed" and "id" in p:
+            self._db.execute("UPDATE jobs SET state='active' WHERE id=?", (p["id"],))
+        elif k == "job.deleted" and "id" in p:
+            self._db.execute("UPDATE jobs SET state='deleted' WHERE id=?", (p["id"],))
+        elif k == "job.renewed" and "id" in p:
+            self._db.execute("UPDATE jobs SET expires_at=? WHERE id=?",
+                             (p.get("expires_at"), p["id"]))
         elif k == "trace.record":
             cost: dict[str, Any] = p.get("cost") or {}
             self._db.execute(

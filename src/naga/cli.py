@@ -15,7 +15,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, cast
 
 from naga import storage
 from naga.ledger_store import DurableLedger
@@ -237,6 +237,20 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
     sub.add_parser("routing", help="模型路由仪表盘(M4b:节省/记分卡)")
     sub.add_parser("soak", help="30 天 soak 报告(M5:P0/心跳)")
+    j = sub.add_parser("job", help="定时任务面(附录 C:add/list/pause/resume/delete/renew)")
+    j.add_argument("action", choices=["add", "list", "pause", "resume",
+                                      "delete", "renew"])
+    j.add_argument("text", nargs="?", help="add:自然语言需求或(goal 文本)")
+    j.add_argument("job_id", nargs="?", help="pause/resume/delete/renew 的目标")
+    j.add_argument("--cron", help="直接给 cron(跳过自然语言编译)")
+    j.add_argument("--timezone", help="IANA 时区(默认 Asia/Shanghai)")
+    j.add_argument("--misfire", choices=["skip", "runOnce", "catchUp"],
+                   default="skip", help="错过语义(GAP12)")
+    j.add_argument("--r-ceiling", default="R1", help="R0-R4(默认 R1)")
+    j.add_argument("--expires", help="ISO8601 有效期(R3+ 必填)")
+    j.add_argument("--state", help="list 按状态过滤")
+    j.add_argument("--until", help="renew 的新有效期(ISO8601)")
+    j.add_argument("--reason", help="pause 原因")
     m = sub.add_parser("memory", help="记忆面(§6.5:list/show/forget)")
     m.add_argument("action", choices=["list", "show", "forget"])
     m.add_argument("target", nargs="?",
@@ -254,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(args)
     if args.cmd == "memory":
         return cmd_memory(args)
+    if args.cmd == "job":
+        return cmd_job(args)
     if args.cmd == "routing":
         return cmd_routing(args)
     if args.cmd == "soak":
@@ -313,6 +329,110 @@ def cmd_memory(args: argparse.Namespace) -> int:
         return 0
     finally:
         led.close()
+
+
+async def _ws_call(method: str, params: dict[str, Any],
+                   idempotency_key: str | None = None) -> dict[str, Any]:
+    """回环 WS 单次调用(hello → req → res;CLI 与 daemon 同进程拓扑)。"""
+    import aiohttp
+
+    port = int(os.environ.get("NAGA_WS_PORT", "18789"))
+    async with aiohttp.ClientSession() as session, \
+            session.ws_connect(f"ws://127.0.0.1:{port}/gw") as ws:
+        await ws.send_json({"type": "hello", "proto": "samsara/1"})
+        await ws.receive()
+        req: dict[str, Any] = {"type": "req", "id": "cli", "method": method,
+                               "params": params}
+        if idempotency_key:
+            req["idempotency_key"] = idempotency_key
+        await ws.send_json(req)
+        while True:
+            raw: object = json.loads((await ws.receive()).data)
+            frame = cast("dict[str, Any]", raw if isinstance(raw, dict) else {})
+            if frame.get("type") == "res" and frame.get("id") == "cli":
+                if not frame.get("ok"):
+                    err_raw: object = frame.get("error")
+                    err = (cast("dict[str, Any]", err_raw)
+                           if isinstance(err_raw, dict) else {})
+                    raise RuntimeError(f"{err.get('code')}: {err.get('message')}")
+                result_raw: object = frame.get("result")
+                return (cast("dict[str, Any]", result_raw)
+                        if isinstance(result_raw, dict) else {})
+
+
+def cmd_job(args: argparse.Namespace) -> int:
+    """定时任务面(附录 C):add/list/pause/resume/delete/renew——经 daemon WS。"""
+    import uuid as _uuid
+
+    try:
+        if args.action == "add":
+            result = asyncio.run(_ws_call(
+                "job.create",
+                {"text": args.text} if not args.cron else {
+                    "cron": args.cron, "goal": args.text,
+                    "timezone": args.timezone or "Asia/Shanghai",
+                    "misfire": args.misfire, "r_ceiling": args.r_ceiling,
+                    "expires_at": args.expires},
+                idempotency_key="ik_cli_" + _uuid.uuid4().hex[:16]))
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"job: 已创建 {result['job_id']}")
+                print(f"  cron: {result['cron']} ({result['timezone']})"
+                      f"  ≈{result['fires_per_month']} 次/月")
+                print(f"  goal: {result['goal']}")
+                print(f"  misfire: {result['misfire']}  rCeiling: {result['r_ceiling']}"
+                      f"  预算: {result['budget']['tokens']} tokens")
+            return 0
+        if args.action == "list":
+            params: dict[str, Any] = {}
+            if args.state:
+                params["state"] = args.state
+            result = asyncio.run(_ws_call("job.list", params))
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+                return 0
+            print(f"job: {result['count']} 条")
+            for it in result["items"]:
+                print(f"  {it['id']} [{it['state']}] {it['schedule']} "
+                      f"({it['timezone']}) misfire={it['misfire']} "
+                      f"r={it['r_ceiling']} last_fire={it.get('last_fire') or '-'}")
+                print(f"    goal: {JobGoalLazy(it['goal_cas'])}")
+            return 0
+        # pause/resume/delete/renew
+        params = {"job_id": args.job_id}
+        if args.action == "renew":
+            if not args.until:
+                print("job renew 需要 --until", file=sys.stderr)
+                return 2
+            params["until"] = args.until
+        if args.action == "pause" and args.reason:
+            params["reason"] = args.reason
+        result = asyncio.run(_ws_call(f"job.{args.action}", params))
+        print(f"job: {args.action} {result.get('job_id')} ok"
+              if not args.json else json.dumps(result, ensure_ascii=False))
+        return 0
+    except (OSError, RuntimeError) as err:
+        print(f"job: daemon 不可达或拒绝({err})——定时任务面需要运行中的 daemon",
+              file=sys.stderr)
+        return 1
+
+
+class JobGoalLazy:
+    """goal 的 CAS 文本按需取(纯文件读,不启账本句柄——CLI 与 daemon 并存)。"""
+
+    def __init__(self, goal_cas: str):
+        self._cas = goal_cas
+
+    def __str__(self) -> str:
+        hexd = self._cas.removeprefix("sha256:")
+        path = os.path.join(storage.resolve_home(), "assets", "blobs",
+                            hexd[:2], hexd[2:4], hexd)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()[:60]
+        except OSError:
+            return "(不可读)"
 
 
 def cmd_routing(args: argparse.Namespace) -> int:

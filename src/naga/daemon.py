@@ -173,6 +173,43 @@ async def amain(home: str) -> int:
     print(f"[daemon] ready pid={os.getpid()} port={port} "
           f"bindings={len(bindings)}", flush=True)
 
+    # ── 附录 C:定时任务调度器(fire 经 lane;wallMs 兜底;C.3 触发链路) ──
+    from naga.jobs import JobScheduler, parse_budget
+
+    async def _job_fire(row: dict[str, Any], goal: str, backfill: bool) -> None:
+        session_key = f"job:{row['id']}"
+        budget = parse_budget(str(row["budget"]))  # list_jobs 键名:budget
+
+        async def runner() -> None:
+            trace_id = "tr_" + uuid.uuid4().hex[:24]
+            result: Any = None
+            outcome = "timeout"
+            try:
+                result = await asyncio.wait_for(
+                    gateway.run_agent(
+                        session_key=session_key, goal=goal,
+                        budget=budget["tokens"], trace_id=trace_id,
+                        actor_trust=row["trust_snapshot"],
+                        r_ceiling=int(str(row["r_ceiling"])[1:])),
+                    timeout=budget["wall_ms"] / 1000)
+                outcome = str(result.outcome)
+            except TimeoutError:
+                print(f"[jobs] {row['id']} wall-clock 超时"
+                      f"({budget['wall_ms']}ms)", flush=True)
+            await gateway.broadcast("job.completed", {
+                "session_key": session_key, "job_id": row["id"],
+                "outcome": outcome, "backfill": backfill,
+                "tokens": result.tokens if result is not None else 0,
+                "reply": (result.reply if result is not None else None)
+                         if row["notification"] != "silent" else None})
+        await gateway.submit(session_key, runner)
+
+    scheduler = JobScheduler(
+        led, fire_callback=_job_fire,
+        trust_path=os.path.join(home, "trust.json"))
+    scheduler_task = asyncio.create_task(scheduler.run_forever())
+    print("[jobs] 调度器已启动(30s tick;misfire 处置见账本)", flush=True)
+
     # ── M4a-2:Curator 保鲜(启动扫一次 + 7 天周期;幂等)与晋升自动触发 ──
     from naga.curator import Curator
     from naga.promotion import (
@@ -286,7 +323,8 @@ async def amain(home: str) -> int:
     loop.add_signal_handler(signal.SIGTERM, _on_term)
     await stop.wait()
 
-    for t in (curator_task, gepa_task, health_task, constitution_task):
+    for t in (curator_task, gepa_task, health_task, constitution_task,
+              scheduler_task):
         t.cancel()
     first_channel.stop()
     for ch in gateway.wechat_channels.values():

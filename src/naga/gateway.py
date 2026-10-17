@@ -311,6 +311,12 @@ class Gateway:
             return self._memory_list(req)
         if method == "memory.forget":
             return await self._memory_forget(req)
+        if method == "job.list":
+            return self._job_list(req)
+        if method in ("job.pause", "job.resume", "job.delete", "job.renew"):
+            return self._job_transition(method, req)
+        if method == "job.create":
+            return await self._job_create(req)
         if method != "agent.run":
             raise GatewayError("GATE.METHOD_UNKNOWN", f"method {method!r} not in M1 set")
         params: dict[str, Any] = req.get("params") or {}
@@ -397,6 +403,135 @@ class Gateway:
             "status": "forgotten", "kind": "memory.forgotten"})
         return result
 
+    # ---- job.* 方法面(接口 §3.5,附录 C;回环=owner) ----
+
+    async def _job_create(self, req: dict[str, Any]) -> dict[str, Any]:
+        from naga.jobs import (
+            JOB_DEFAULT_BUDGET_TOKENS,
+            JOB_WALL_MS_DEFAULT,
+            JobSpec,
+            compile_natural_language,
+            fires_per_month,
+        )
+        from naga.trust import derive_trust
+
+        ik = str(req.get("idempotency_key") or "")
+        if not ik:
+            raise GatewayError("GATE.PARAM_MISSING", "副作用方法必须携带幂等键(接口 §2.2)")
+        cached = self._ledger.query(
+            "SELECT result_cas FROM idempotency_keys WHERE key=?", (ik,))
+        if cached and cached[0][0]:
+            return json.loads(self._ledger.cas.get(cached[0][0]))
+        params: dict[str, Any] = req.get("params") or {}
+        session_key = str(params.get("session_key") or "webchat:dm:owner")
+        channel, _, peer = session_key.partition(":dm:")
+        derived = derive_trust(channel or "webchat", peer)
+        if derived.trust in ("guest", "untrusted"):
+            raise GatewayError("JOB.FORBIDDEN",
+                               "guest/untrusted 不可创建定时任务(§10 矩阵)")
+        raw_cron = str(params.get("cron") or "").strip()
+        if raw_cron:
+            spec = JobSpec(
+                job_id="job_" + uuid.uuid4().hex[:20], schedule=raw_cron,
+                timezone=str(params.get("timezone") or "Asia/Shanghai"),
+                goal=str(params.get("goal") or "").strip(),
+                trust_snapshot=derived.trust,
+                budget={"tokens": int(params.get("budget_tokens")
+                                      or JOB_DEFAULT_BUDGET_TOKENS),
+                        "wall_ms": int(params.get("wall_ms")
+                                       or JOB_WALL_MS_DEFAULT)},
+                r_ceiling=str(params.get("r_ceiling") or "R1"),
+                notification=str(params.get("notification") or "smart"),
+                misfire=str(params.get("misfire") or "skip"),
+                expires_at=str(params.get("expires_at") or "") or None,
+                creator_channel=channel or "webchat", creator_peer=peer)
+        else:
+            text = str(params.get("text") or "").strip()
+            if not text:
+                raise GatewayError("GATE.PARAM_MISSING", "job.create 需要 text 或 cron")
+            try:
+                spec = await compile_natural_language(self._make_adapter(), text)
+            except ValueError as err:
+                raise GatewayError("JOB.COMPILE_FAILED", str(err)) from err
+            spec.trust_snapshot = derived.trust
+            spec.creator_channel = channel or "webchat"
+            spec.creator_peer = peer
+            if params.get("budget_tokens"):
+                spec.budget["tokens"] = int(params["budget_tokens"])
+            if params.get("misfire"):
+                spec.misfire = str(params["misfire"])
+            if params.get("r_ceiling"):
+                spec.r_ceiling = str(params["r_ceiling"])
+            if params.get("expires_at"):
+                spec.expires_at = str(params["expires_at"])
+        try:
+            from naga.jobs import JobStore
+            JobStore(self._ledger).create(spec, actor=session_key)
+        except ValueError as err:
+            raise GatewayError("JOB.INVALID", str(err)) from err
+        result = {
+            "job_id": spec.job_id, "cron": spec.schedule,
+            "timezone": spec.timezone, "goal": spec.goal,
+            "misfire": spec.misfire, "r_ceiling": spec.r_ceiling,
+            "budget": spec.budget,
+            "fires_per_month": fires_per_month(spec.schedule, spec.timezone),
+            "notification": spec.notification,
+        }
+        payload = json.dumps(result, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False).encode("utf-8")
+        cas = self._ledger.cas.put(payload)
+        self._ledger.execute(
+            "INSERT OR REPLACE INTO idempotency_keys VALUES (?,?,?,?,?)",
+            (ik, "job.create", len(self._ledger.entries), cas,
+             datetime.datetime.now(datetime.UTC).isoformat()))
+        await self._broadcast("job.created", {
+            "session_key": session_key, "job_id": spec.job_id,
+            "cron": spec.schedule, "state": "active", "kind": "job.created"})
+        return result
+
+    def _job_list(self, req: dict[str, Any]) -> dict[str, Any]:
+        from naga.jobs import JobStore, scan_job_events
+
+        params: dict[str, Any] = req.get("params") or {}
+        events = scan_job_events(self._ledger)
+        rows = JobStore(self._ledger).list_jobs(
+            state=str(params.get("state") or "") or None)
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            slot: dict[str, Any] = events.get(r["id"], {})
+            raw_creator: object = slot.get("creator")
+            items.append({**r,
+                          "last_fire": slot.get("last_fire"),
+                          "creator": (cast("dict[str, Any]", raw_creator)
+                                      if isinstance(raw_creator, dict) else {})})
+        return {"items": items, "count": len(items)}
+
+    def _job_transition(self, method: str, req: dict[str, Any]) -> dict[str, Any]:
+        from naga.jobs import JobStore
+
+        params: dict[str, Any] = req.get("params") or {}
+        job_id = str(params.get("job_id") or "")
+        if not job_id:
+            raise GatewayError("GATE.PARAM_MISSING", f"{method} 需要 job_id")
+        store = JobStore(self._ledger)
+        try:
+            if method == "job.pause":
+                ok = store.pause(job_id, reason=str(params.get("reason") or "manual"))
+            elif method == "job.resume":
+                ok = store.resume(job_id)
+            elif method == "job.delete":
+                ok = store.delete(job_id)
+            else:
+                until = str(params.get("until") or "")
+                if not until:
+                    raise GatewayError("GATE.PARAM_MISSING", "job.renew 需要 until")
+                ok = store.renew(job_id, until)
+        except ValueError as err:
+            raise GatewayError("JOB.INVALID", str(err)) from err
+        if not ok:
+            raise GatewayError("JOB.NOT_FOUND", f"任务不存在: {job_id}")
+        return {"job_id": job_id, "ok": True}
+
     # ---- lane 消费者 ----
     async def _consume(self, lane: int, queue: asyncio.Queue[dict[str, Any]]) -> None:
         while True:
@@ -427,11 +562,15 @@ class Gateway:
         await self._broadcast(event, payload)
 
     async def run_agent(self, *, session_key: str, goal: str, budget: int,
-                        trace_id: str, actor_trust: str | None = None) -> Any:
+                        trace_id: str, actor_trust: str | None = None,
+                        r_ceiling: int | None = None) -> Any:
         """会话内执行一次 AgentLoop(渠道 runner 复用;结果事件由调用方处理)。
 
         §10.1 信任级策略单点:预算封顶 + guest R0 工具过滤 + untrusted 拒绝。
         工具集与预算树经 SubAgentSpawner 装配(M3-1:派生授权代数单点)。
+        r_ceiling(附录 C.4):任务级风险帽,在信任档位之上再收紧工具集
+        (定时任务快照;None=不额外收紧)。宪法锚点(task_budget/
+        TRUST_R_CEILING)不动——帽子只能更严。
         """
         budget = task_budget(actor_trust, budget)
         if budget <= 0:
@@ -456,9 +595,12 @@ class Gateway:
             session_key=session_key, actor_trust=actor_trust,
             budget=kernel.Budget(budget), depth=0, parent_trace=trace_id,
             branch=branch)
+        tools: list[Any] = spawner.make_tools()
+        if r_ceiling is not None:  # 任务级风险帽罩住全部装配产物(含 spawn)
+            tools = [t for t in tools if tool_risk(t) <= r_ceiling]
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
                          budget=spawner.budget,
-                         adapter=make_adapter(), tools=spawner.make_tools(),
+                         adapter=make_adapter(), tools=tools,
                          skill_store=skills,
                          session_key=session_key, trace_id=trace_id,
                          actor_trust=actor_trust, branch=branch,
