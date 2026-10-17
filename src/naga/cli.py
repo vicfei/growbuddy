@@ -240,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     j = sub.add_parser("job", help="定时任务面(附录 C:add/list/pause/resume/delete/renew)")
     j.add_argument("action", choices=["add", "list", "pause", "resume",
                                       "delete", "renew"])
-    j.add_argument("text", nargs="?", help="add:自然语言需求或(goal 文本)")
+    j.add_argument("text", nargs="?",
+                   help="add:自然语言需求(goal 文本,须置于选项之前)")
     j.add_argument("job_id", nargs="?", help="pause/resume/delete/renew 的目标")
     j.add_argument("--cron", help="直接给 cron(跳过自然语言编译)")
     j.add_argument("--timezone", help="IANA 时区(默认 Asia/Shanghai)")
@@ -399,8 +400,13 @@ def cmd_job(args: argparse.Namespace) -> int:
                       f"r={it['r_ceiling']} last_fire={it.get('last_fire') or '-'}")
                 print(f"    goal: {JobGoalLazy(it['goal_cas'])}")
             return 0
-        # pause/resume/delete/renew
-        params = {"job_id": args.job_id}
+        # pause/resume/delete/renew(#85:argparse 双可选位置参数贪心错配,
+        # 单独的 id 落进 text 槽——两槽择一取)
+        job_id = args.job_id or args.text
+        if not job_id:
+            print(f"job {args.action} 需要 job_id", file=sys.stderr)
+            return 2
+        params = {"job_id": job_id}
         if args.action == "renew":
             if not args.until:
                 print("job renew 需要 --until", file=sys.stderr)

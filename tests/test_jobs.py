@@ -490,3 +490,24 @@ def test_run_agent_r_ceiling_filters_tools(tmp_path):
 
     asyncio.run(scenario())
     led.close()
+
+
+def test_cli_job_id_resolves_from_text_slot(monkeypatch):
+    """#85:单独的 id 被 argparse 贪心分进 text 槽,非 add 动作须两槽择一取。"""
+    from naga import cli
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_ws(method: str, params: dict[str, Any],
+                      idempotency_key: str | None = None) -> dict[str, Any]:
+        captured.append((method, params))
+        return {"job_id": params.get("job_id"), "ok": True}
+
+    monkeypatch.setattr(cli, "_ws_call", fake_ws)
+    assert cli.main(["job", "pause", "job_abc"]) == 0
+    assert captured[-1] == ("job.pause", {"job_id": "job_abc"})
+    assert cli.main(["job", "renew", "job_abc", "--until",
+                     "2099-01-01T00:00:00+00:00"]) == 0
+    assert captured[-1] == ("job.renew", {
+        "job_id": "job_abc", "until": "2099-01-01T00:00:00+00:00"})
+    assert cli.main(["job", "delete"]) == 2   # 无 id:参数错误退出码
