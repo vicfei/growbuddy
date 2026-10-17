@@ -106,11 +106,17 @@ def r04():
     rfc23 = ('trace.record' in s and 'skill.use' in s and 'channel.bound' in s
              and 'channel.unbound' in s and 'agent.spawned' in s
              and 'agent.terminated' in s)
-    ok = legacy and rfc23
+    # #23 批第二单(2026-10-18)additive：Curator/工作流/宪法域五 kind
+    rfc23b2 = ('skill.stale' in s and 'skill.archived' in s
+               and 'workflow.compiled' in s and 'constitution.anchored' in s
+               and 'constitution.reanchored' in s)
+    ok = legacy and rfc23 and rfc23b2
     miss = [k for k in ('trace.record', 'skill.use', 'channel.bound', 'channel.unbound',
-                        'agent.spawned', 'agent.terminated') if k not in s] if not rfc23 else []
-    return ok, ('失败类 kind 与映射注存在；#23 批六 kind 在位' if ok
-                else f'缺失败类/映射注: {not legacy}；缺 #23 批 kind: {miss or "无"}')
+                        'agent.spawned', 'agent.terminated', 'skill.stale',
+                        'skill.archived', 'workflow.compiled', 'constitution.anchored',
+                        'constitution.reanchored') if k not in s] if not ok else []
+    return ok, ('失败类 kind 与映射注存在；#23 批六 kind 与第二单五 kind 在位' if ok
+                else f'缺失败类/映射注: {not legacy}；缺 additive kind: {miss or "无"}')
 
 
 @rule('R05 inv_registry（§2.3 单一注册 INV-1~8，B11）')
@@ -190,7 +196,16 @@ def r09():
                   'wechat_reply_chunk_chars', 'wechat_media_max_bytes',
                   'wechat_media_download_timeout_sec', 'wechat_err14_pause_threshold',
                   'wechat_poll_backoff_max_sec'}
-    missing |= rfc23_keys - keys
+    # #23 批第二单注册键必备(v4)：进化/路由/工作流/soak 域 16 + F.1 判据 1
+    rfc23b2_keys = {'workflow_compile_min_uses', 'skill_inject_max_chars',
+                    'skill_promotion_trigger_uses', 'shadow_verify_goals',
+                    'shadow_budget_per_run', 'shadow_cost_tolerance',
+                    'gepa_run_token_cap', 'gepa_max_clusters', 'gepa_cluster_goals',
+                    'shadow_downgrade_wins', 'shadow_explore_budget',
+                    'shadow_explore_max_pending', 'spawn_min_parent_remaining',
+                    'workflow_compile_max_steps_stddev', 'degrade_budget',
+                    'soak_heartbeat_sec', 'soak_disk_min_free_mb'}
+    missing |= (rfc23_keys | rfc23b2_keys) - keys
     ok = not bad_auth and not missing
     return ok, (f'权威不可解析: {bad_auth[:3] or "无"}；缺键: {sorted(missing) or "无"}；'
                 f'RFC 权威类: {len(rfc_class)} 条')

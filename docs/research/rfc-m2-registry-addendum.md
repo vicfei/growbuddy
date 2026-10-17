@@ -70,11 +70,15 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   未引入,当前仅信任级档位;③审批升档(R2 confirm/R3 审批队列/R4 双人复核)属模式系统(M4),
   映射表已按 R 级就位。
 
-## E'. 追加积压(M4a-2,2026-10-11)
+## E'. 追加积压(M4a-2,2026-10-11)→ 已随第二单裁决
 
-- **kind additive 2 条**:`skill.stale` / `skill.archived`(Curator §6.3 状态迁移入账;
-  归档非删除、可恢复 INV-2)。随下一批 RFC 一并裁决。
-- **spec-constants 候选 1 条**:`skill_promotion_trigger_uses=3`(自动晋升触发阈值,RFC 权威类)。
+- **第二单签核:2026-10-18 设计所有者批准("按建议来")**。应用批已执行:
+  枚举五 kind 入 §3.1(DM v1.5)、spec-constants v4 补注册 17 条
+  (workflow_compile_min_uses 权威=主文档附录 F.1;其余 16 条 RFC 权威类:
+  内容注入/触发阈值/影子三参/GEPA 三参/路由三参/派生地板/工作流二参/
+  降级预算/soak 二参)、检查器 R04/R09 第二单扩展、裁决记录
+  closure-ledger.yaml RFC23-B2。原积压条目(skill.stale/archived、
+  skill_promotion_trigger_uses)及其后 M4a-3/M4b/M5-1 新增候选全部随单裁决。
 
 ## E. 建议处置
 

@@ -7,8 +7,11 @@
 # v3：#23 批 RFC 签核（2026-10-11）补注册 11 条——派生域 3 条（权威=主文档 §5.4）、
 #      渠道/派生实现默认 8 条（RFC 权威类：authority 以 RFC 起头者以已签核 RFC 文档为权威，
 #      裁决记录见 closure-ledger.yaml RFC23-B1）。
+# v4：#23 批第二单 RFC 签核（2026-10-18）补注册 17 条——进化/路由/工作流/soak 实现域
+#      16 条（RFC 权威类，RFC23-B2）+ workflow_compile_min_uses（权威=主文档 附录 F.1，
+#      值在权威节字面在位）。
 
-version: 3
+version: 4
 constants:
 
   # ── 接口文档权威域 ──────────────────────────────
@@ -271,6 +274,78 @@ constants:
     value: 60
     authority: "RFC #23 批(2026-10-11 签核): docs/research/rfc-m2-registry-addendum.md B-7"
     note: 轮询错误指数退避上限(1s 起)
+
+  # ── #23 批第二单 RFC 签核 2026-10-18(主文档 附录 F.1)───────────
+  workflow_compile_min_uses:
+    value: 50
+    authority: 主文档 附录 F.1
+    note: F.1 晋升判据"技能复用 ≥ 50 次"(数据触发,不允许人工冲动编译)
+
+  # ── #23 批第二单 RFC 签核 2026-10-18(进化/路由/工作流/soak 域,RFC 权威类)──
+  skill_inject_max_chars:
+    value: 2000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-2"
+    note: 技能正文注入系统提示的单条预算(M4a-1 内容注入)
+  skill_promotion_trigger_uses:
+    value: 3
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-3"
+    note: 晋升自动触发:局部技能复用达阈值入管道
+  shadow_verify_goals:
+    value: 3
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-4"
+    note: 影子验证回放目标数上限(§7.4)
+  shadow_budget_per_run:
+    value: 20000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-5"
+    note: 单次影子回放 token 预算(防跑飞)
+  shadow_cost_tolerance:
+    value: 1.2
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-6"
+    note: 影子裁决成本容差(候选超基线 1.2x 判负)
+  gepa_run_token_cap:
+    value: 2000000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-7"
+    note: GEPA 单循环 token 二级护栏(价格表生效前;cents 上限已注册)
+  gepa_max_clusters:
+    value: 3
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-8"
+    note: 单次优化循环处理失败聚类数上限(§7.5)
+  gepa_cluster_goals:
+    value: 2
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-9"
+    note: 每聚类影子回放目标数
+  shadow_downgrade_wins:
+    value: 3
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-10"
+    note: 路由降档裁决:影子累计 N 胜且零负(E.4)
+  shadow_explore_budget:
+    value: 30000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-11"
+    note: 单次路由影子探索回放预算
+  shadow_explore_max_pending:
+    value: 2
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-12"
+    note: 同簇在飞影子回放上限(探索风暴护栏;只计在飞不计完成)
+  spawn_min_parent_remaining:
+    value: 4000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-13"
+    note: 派生地板:父剩余低于即拒(碎屑配额真 bug 修复,2026-10-11)
+  workflow_compile_max_steps_stddev:
+    value: 2.0
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-14"
+    note: 编译判据:轨迹步数标准差上限(F.1 路径方差低)
+  degrade_budget:
+    value: 30000
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-15"
+    note: F.4 失败降级:解释器接管单节点的独立预算
+  soak_heartbeat_sec:
+    value: 3600
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-16"
+    note: soak 心跳周期(M5)
+  soak_disk_min_free_mb:
+    value: 512
+    authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-17"
+    note: soak 磁盘余量地板(低于即 P0)
 
 # ── TBD 占位（C1 延伸：先登记不确定性，超期未决自动升级，纪律同 §15）──
 tbd:
