@@ -110,12 +110,18 @@ def r04():
     rfc23b2 = ('skill.stale' in s and 'skill.archived' in s
                and 'workflow.compiled' in s and 'constitution.anchored' in s
                and 'constitution.reanchored' in s)
-    ok = legacy and rfc23 and rfc23b2
+    # #23 批第三单(2026-10-18)additive：记忆计量/保鲜 + 定时任务生命周期八 kind
+    rfc23b3 = ('memory.use' in s and 'memory.stale' in s and 'memory.archived' in s
+               and 'job.created' in s and 'job.paused' in s and 'job.resumed' in s
+               and 'job.deleted' in s and 'job.renewed' in s)
+    ok = legacy and rfc23 and rfc23b2 and rfc23b3
     miss = [k for k in ('trace.record', 'skill.use', 'channel.bound', 'channel.unbound',
                         'agent.spawned', 'agent.terminated', 'skill.stale',
                         'skill.archived', 'workflow.compiled', 'constitution.anchored',
-                        'constitution.reanchored') if k not in s] if not ok else []
-    return ok, ('失败类 kind 与映射注存在；#23 批六 kind 与第二单五 kind 在位' if ok
+                        'constitution.reanchored', 'memory.use', 'memory.stale',
+                        'memory.archived', 'job.created', 'job.paused', 'job.resumed',
+                        'job.deleted', 'job.renewed') if k not in s] if not ok else []
+    return ok, ('失败类 kind 与映射注存在；#23 批六 kind 与第二单五 kind 与第三单八 kind 在位' if ok
                 else f'缺失败类/映射注: {not legacy}；缺 additive kind: {miss or "无"}')
 
 
@@ -205,7 +211,13 @@ def r09():
                     'shadow_explore_max_pending', 'spawn_min_parent_remaining',
                     'workflow_compile_max_steps_stddev', 'degrade_budget',
                     'soak_heartbeat_sec', 'soak_disk_min_free_mb'}
-    missing |= (rfc23_keys | rfc23b2_keys) - keys
+    # #23 批第三单注册键必备(v5)：记忆域 6 + 定时任务域 4
+    rfc23b3_keys = {'memory_max_bytes', 'memory_inject_max_chars',
+                    'memory_recall_limit', 'memory_distill_min_tool_calls',
+                    'memory_consolidate_min_recurrence', 'memory_consolidate_similarity',
+                    'job_scheduler_tick_seconds', 'job_default_budget_tokens',
+                    'job_goal_max_bytes', 'job_wall_ms_default'}
+    missing |= (rfc23_keys | rfc23b2_keys | rfc23b3_keys) - keys
     ok = not bad_auth and not missing
     return ok, (f'权威不可解析: {bad_auth[:3] or "无"}；缺键: {sorted(missing) or "无"}；'
                 f'RFC 权威类: {len(rfc_class)} 条')
