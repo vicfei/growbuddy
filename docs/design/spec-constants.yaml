@@ -10,8 +10,10 @@
 # v4：#23 批第二单 RFC 签核（2026-10-18）补注册 17 条——进化/路由/工作流/soak 实现域
 #      16 条（RFC 权威类，RFC23-B2）+ workflow_compile_min_uses（权威=主文档 附录 F.1，
 #      值在权威节字面在位）。
+# v5：#23 批第三单 RFC 签核（2026-10-18）补注册 10 条——记忆域 6 条 + 定时任务域 4 条
+#      （RFC 权威类，RFC23-B3）；job_wall_ms_default 权威=主文档 附录 C.2（值字面在位）。
 
-version: 4
+version: 5
 constants:
 
   # ── 接口文档权威域 ──────────────────────────────
@@ -346,6 +348,49 @@ constants:
     value: 512
     authority: "RFC #23-B2 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'-17"
     note: soak 磁盘余量地板(低于即 P0)
+  # ── #23 批第三单 RFC 签核 2026-10-18(记忆域,RFC 权威类)──────────
+  memory_max_bytes:
+    value: 16384
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 单条记忆内容上限(§6.5;加密外置 CAS 载荷)
+  memory_inject_max_chars:
+    value: 2000
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 召回注入系统提示的字符预算(§6.5 读取路径)
+  memory_recall_limit:
+    value: 5
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 单次召回条数上限
+  memory_distill_min_tool_calls:
+    value: 1
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 任务收尾提炼门槛(④ 类调用 1 次;有工具动作的事件才值得记)
+  memory_consolidate_min_recurrence:
+    value: 3
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 巩固复现门槛(低频是琐事,高频是偏好;§6.5 睡眠机制)
+  memory_consolidate_similarity:
+    value: 0.5
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E''-1"
+    note: 巩固聚类相似度阈值(关键词袋重叠系数,召回导向)
+
+  # ── #23 批第三单 RFC 签核 2026-10-18(定时任务域;wall_ms 权威=附录 C.2)──
+  job_scheduler_tick_seconds:
+    value: 30
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'''-1"
+    note: 调度器判定周期(附录 C 运行时;misfire 精度受此粒度限制)
+  job_default_budget_tokens:
+    value: 200000
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'''-1"
+    note: 任务默认 token 预算(信任级封顶仍由 §10.1 单点执行)
+  job_goal_max_bytes:
+    value: 4096
+    authority: "RFC #23-B3 批(2026-10-18 签核): docs/research/rfc-m2-registry-addendum.md E'''-1"
+    note: 任务 goal 文本上限(CAS 资产)
+  job_wall_ms_default:
+    value: 1800000
+    authority: 主文档 附录 C.2
+    note: 任务默认墙钟上限(C.2 规格示例值字面在位;asyncio.wait_for 兜底)
 
 # ── TBD 占位（C1 延伸：先登记不确定性，超期未决自动升级，纪律同 §15）──
 tbd:

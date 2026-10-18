@@ -80,7 +80,15 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   closure-ledger.yaml RFC23-B2。原积压条目(skill.stale/archived、
   skill_promotion_trigger_uses)及其后 M4a-3/M4b/M5-1 新增候选全部随单裁决。
 
-## E''. 第三单积压(记忆系统 §6.5,2026-10-18,issue #81)——待批
+## E''. 第三单积压(记忆系统 §6.5,2026-10-18,issue #81)→ 已随第三单裁决
+
+- **第三单签核:2026-10-18 设计所有者批准("按建议来")**。裁决:
+  - A 节三 kind(memory.use/stale/archived)additive 入 §3.1(DM v1.6);
+  - B 节六常量入 spec-constants v5(RFC 权威类,RFC23-B3);
+  - C 节偏差四条——①关键词召回**接受为现状形态**,embedding 召回+重排推迟;
+    ②semantic 非 owner 直接拒绝**接受**,人审队列形态推迟;③回滚恢复为
+    active **接受**(Curator 按闲置重新归档);④写闸入宪法锚点**推迟**
+    (与 K.3 特权进程硬化批次一并考虑,避免二次重锚定)。
 
 - **additive kind 三条**(DM §3.1 枚举扩展候选,与 skill.use/stale/archived
   同路径):`memory.use`(召回计量,检索质量进 L3)、`memory.stale`、
@@ -96,7 +104,19 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   ③遗忘回滚将条目恢复为 active(而非遗忘前原状态,Curator 会按闲置重新
   归档);④记忆写闸门未入宪法锚点(避免重锚定,候选 R5 条款)。
 
-## E'''. 第三单追加(定时任务附录 C,2026-10-18,issue #83)——待批
+## E'''. 第三单追加(定时任务附录 C,2026-10-18,issue #83)→ 已随第三单裁决
+
+- **第三单签核:2026-10-18 设计所有者批准("按建议来")**。裁决:
+  - A 节五 kind(job.created/paused/resumed/deleted/renewed)additive 入
+    §3.1(DM v1.6;job.fire|missed 本在冻结枚举);
+  - B 节四常量入 spec-constants v5(job_wall_ms_default 权威=主文档附录
+    C.2 值字面在位;其余三条 RFC 权威类,RFC23-B3);
+  - C 节偏差四条——①rCeiling 工具帽形态**维持**(宪法锚点不动,单向更严);
+    ②smart=立即广播**接受为现状**,注意力路由时机(晨报)推迟;③微信
+    任务结果投递**推迟**(待会话注册表批次);④misfire 精度=tick 粒度
+    **接受**。
+  - 应用批:issue #89;检查器 R04/R09 第三单扩展(规则数 20 不变);
+    closure-ledger RFC23-B3(verified)。
 
 - **additive kind 五条**(同上路径):`job.created` / `job.paused` /
   `job.resumed` / `job.deleted` / `job.renewed`。既有 `job.fire|missed`
