@@ -237,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-steps", type=int, default=8, help="回路步数上限")
     sub.add_parser("routing", help="模型路由仪表盘(M4b:节省/记分卡)")
     sub.add_parser("soak", help="30 天 soak 报告(M5:P0/心跳)")
+    se = sub.add_parser("session", help="会话注册表(§5:list)")
+    se.add_argument("action", nargs="?", default="list", choices=["list"])
+    se.add_argument("--state", choices=["open", "closed"], help="按状态过滤")
     j = sub.add_parser("job", help="定时任务面(附录 C:add/list/pause/resume/delete/renew)")
     j.add_argument("action", choices=["add", "list", "pause", "resume",
                                       "delete", "renew"])
@@ -271,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_memory(args)
     if args.cmd == "job":
         return cmd_job(args)
+    if args.cmd == "session":
+        return cmd_session(args)
     if args.cmd == "routing":
         return cmd_routing(args)
     if args.cmd == "soak":
@@ -452,6 +457,40 @@ class JobGoalLazy:
                 return fh.read()[:60]
         except OSError:
             return "(不可读)"
+
+
+def cmd_session(args: argparse.Namespace) -> int:
+    """会话注册表视图(§5 sessions):只读直查投影,不启账本句柄。"""
+    import sqlite3
+
+    home = storage.resolve_home(args.home)
+    db = os.path.join(home, "ledger", "index.sqlite")
+    if not os.path.exists(db):
+        print("session: 无账本(先启动 daemon 或跑过任务)")
+        return 1
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # 只读挂载,WAL 并存安全
+    try:
+        sql = ("SELECT session_key, trust_level, state, created_at, "
+               "last_active_at FROM sessions")
+        params: tuple[Any, ...] = ()
+        if args.state:
+            sql += " WHERE state=?"
+            params = (args.state,)
+        sql += " ORDER BY last_active_at DESC LIMIT 50"
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+    if args.json:
+        print(json.dumps(
+            [{"session_key": r[0], "trust": r[1], "state": r[2],
+              "created_at": r[3], "last_active_at": r[4]} for r in rows],
+            ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"session: {len(rows)} 条(近 50)")
+    for r in rows:
+        mark = "🟢" if r[2] == "open" else "⚪"
+        print(f"  {mark} {r[0]} [{r[1]}/{r[2]}] last={r[4]}")
+    return 0
 
 
 def cmd_routing(args: argparse.Namespace) -> int:

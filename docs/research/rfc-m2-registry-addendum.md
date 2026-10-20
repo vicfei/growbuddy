@@ -130,6 +130,21 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   ③微信渠道的任务结果投递待会话注册表(session→channel 映射)批次;
   ④守护停机错过窗口以账本 last-fire 推算,精度=调度 tick 粒度。
 
+## E''''. 第四单积压(会话注册表,2026-10-20,issue #91)——待批
+
+- **additive kind**:无(session.open|close 本在冻结枚举;last_active 经
+  trace.record 投影重建,未新增计量类 kind)。
+- **spec-constants 两条**(RFC 权威类候选):session_idle_minutes=60 /
+  session_idle_poll_seconds=60(实现值见 naga/sessions.py 模块头)。
+- **实现偏差记录**(供裁决):①sessions 表按冻结 §5 DDL 原文落列,但
+  branches/workspaces 两张 FK 目标表在实现中不存在(SQLite 默认不强制
+  FK,列值恒 NULL——与实现侧简化 schema 的一贯偏差);②存量
+  session.open 事件(无 lane_id)回放时 lane_id 记 "legacy";③关闭后
+  重开=新一次 session.open(created_at 重置;微信渠道自身的带
+  trust_source 首开保留,重开由 gateway 补发 source=runtime-reopen);
+  ④job:* 会话不入注册表;⑤会话级常驻分支未做(每任务分支维持,
+  收尾整合蒸馏覆盖记忆角度;常驻形态的崩溃/物化时机设计另批)。
+
 ## E. 建议处置
 
 1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入

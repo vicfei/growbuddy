@@ -145,6 +145,19 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (  -- GAP8:副作用方法去重缓�
   result_cas TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sessions (  -- 数据模型 §5 DDL(冻结原文;FK 目标表为占位,SQLite 默认不强制)
+  session_key TEXT PRIMARY KEY,
+  lane_id TEXT NOT NULL,
+  trust_level TEXT NOT NULL CHECK (trust_level IN ('owner','known','guest','untrusted')),
+  branch_id TEXT REFERENCES branches(branch_id),
+  workspace_id TEXT REFERENCES workspaces(id),
+  mode TEXT NOT NULL DEFAULT 'auto_edit'
+    CHECK (mode IN ('plan','confirm','auto_edit','full_access')),
+  mode_expires_at TEXT,
+  state TEXT NOT NULL CHECK (state IN ('open','closed')),
+  created_at TEXT NOT NULL,
+  last_active_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS jobs (      -- 数据模型 §5 DDL(附录 C.3,冻结原文)
   id TEXT PRIMARY KEY,
   schedule_cron TEXT NOT NULL,
@@ -482,7 +495,21 @@ class DurableLedger:
         elif k == "job.renewed" and "id" in p:
             self._db.execute("UPDATE jobs SET expires_at=? WHERE id=?",
                              (p.get("expires_at"), p["id"]))
+        elif k == "session.open" and "session_key" in p:
+            self._db.execute(
+                "INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (p["session_key"], str(p.get("lane_id") or "legacy"),
+                 p.get("trust") or p.get("trust_level") or "owner",
+                 None, None, "auto_edit", None, "open",
+                 _iso(entry["ts"]), _iso(entry["ts"])))
+        elif k == "session.close" and "session_key" in p:
+            self._db.execute(
+                "UPDATE sessions SET state='closed' WHERE session_key=?",
+                (p["session_key"],))
         elif k == "trace.record":
+            self._db.execute(
+                "UPDATE sessions SET last_active_at=? WHERE session_key=? "
+                "AND state='open'", (_iso(entry["ts"]), p.get("session_key")))
             cost: dict[str, Any] = p.get("cost") or {}
             self._db.execute(
                 "INSERT OR REPLACE INTO traces VALUES (?,?,?,?,?,?,?,?,?,?)",
