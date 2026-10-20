@@ -578,6 +578,7 @@ class Gateway:
                 reply=("当前信任级不足以执行任务(仅支持握手与只读事件流,§10.1)"
                        "——请联系 owner 完成绑定或升级信任级"),
                 outcome="rejected", trace_id=trace_id, steps=0, tokens=0, cost_cents=0)
+        self._note_activity(session_key, actor_trust)
         kern = kernel.Kernel(ledger=cast("kernel.Ledger", self._ledger))  # 鸭子类型
         from naga.spawner import SubAgentSpawner  # 局部导入:spawner 依赖本模块,避免环
 
@@ -617,6 +618,44 @@ class Gateway:
                     await self.on_task_done(session_key)  # 后台钩子:异常不杀任务
                 except Exception:  # noqa: BLE001, S110
                     pass
+
+    def _note_activity(self, session_key: str,
+                       actor_trust: str | None) -> None:
+        """会话注册表开门(§5 sessions):无行或已关闭 → session.open(新开
+        一段对话,created_at 重置);活跃则不动作(last_active 由 trace 投影
+        更新)。job:* 是时间驱动执行体,不入注册表。"""
+        if session_key.startswith("job:"):
+            return
+        rows = self._ledger.query(
+            "SELECT state FROM sessions WHERE session_key=?", (session_key,))
+        if rows and rows[0][0] == "open":
+            return
+        lane = _lane_of(session_key, self._n_lanes)
+        self._ledger.append("session.open", session_key, {
+            "session_key": session_key,
+            "channel": session_key.split(":", 1)[0],
+            "lane_id": f"ln_{lane}",
+            "trust": actor_trust or "owner",
+            "trust_source": "runtime-reopen" if rows else "runtime"})
+
+    async def notify_session(self, session_key: str, text: str) -> bool:
+        """按会话路由投递(定时任务结果→微信;附录 C.5 的当前形态):
+        wechat:dm:peer → 绑定渠道实例(peer==binder,allowlist 派生实证;
+        单绑定回落)。投递尽力而为,失败不抛(返回 False)。"""
+        from naga.sessions import parse_session_channel
+        channel, peer = parse_session_channel(session_key)
+        if channel != "wechat" or not peer:
+            return False
+        ch = self._wechat_channels.get(peer)
+        if ch is None and len(self._wechat_channels) == 1:
+            ch = next(iter(self._wechat_channels.values()))
+        if ch is None or not getattr(ch, "is_running", False):
+            return False
+        try:
+            await ch.send_reply(peer, text, None)
+            return True
+        except Exception:  # noqa: BLE001 —— 通知尽力而为
+            return False
 
     def _routing_bookkeeping(self, goal: str, session_key: str,
                              spec: Any, result: Any) -> None:

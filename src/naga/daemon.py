@@ -12,7 +12,7 @@ import os
 import signal
 import sys
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from naga import storage
 from naga.gateway import WS_PORT, Gateway
@@ -115,6 +115,15 @@ async def amain(home: str) -> int:
     gateway = Gateway(led, make_adapter=lambda: adapter, tools=tools, home=home,
                       router=router, memory=memory)
 
+    # ── 会话注册表(§5 sessions):闲置关闭 + 收尾整合蒸馏 ──
+    from naga.jobs import scan_job_events
+    from naga.sessions import SessionRegistry, creator_session_of, job_notify_text
+
+    sessions = SessionRegistry(led, memory=memory,
+                               make_adapter=lambda: adapter)
+    sessions_task = asyncio.create_task(sessions.run_forever())
+    print("[sessions] 会话注册表已启动(闲置 60 分钟收尾整合)", flush=True)
+
     # 微信渠道:runner 经网关 lane(会话路由单一权威);guest 预算封顶(§10.1 首项)
     from naga.wechat import WeChatChannel
 
@@ -176,9 +185,18 @@ async def amain(home: str) -> int:
     # ── 附录 C:定时任务调度器(fire 经 lane;wallMs 兜底;C.3 触发链路) ──
     from naga.jobs import JobScheduler, parse_budget
 
+    def _creator_session(job_id: str) -> str | None:
+        events = scan_job_events(led)
+        raw_creator: object = events.get(job_id, {}).get("creator")
+        creator = cast("dict[str, Any]", raw_creator) \
+            if isinstance(raw_creator, dict) else None
+        return creator_session_of(creator)
+
     async def _job_fire(row: dict[str, Any], goal: str, backfill: bool) -> None:
         session_key = f"job:{row['id']}"
         budget = parse_budget(str(row["budget"]))  # list_jobs 键名:budget
+        notification = str(row["notification"])
+        target_session = _creator_session(str(row["id"]))
 
         async def runner() -> None:
             trace_id = "tr_" + uuid.uuid4().hex[:24]
@@ -196,12 +214,17 @@ async def amain(home: str) -> int:
             except TimeoutError:
                 print(f"[jobs] {row['id']} wall-clock 超时"
                       f"({budget['wall_ms']}ms)", flush=True)
+            reply = result.reply if result is not None else None
             await gateway.broadcast("job.completed", {
                 "session_key": session_key, "job_id": row["id"],
                 "outcome": outcome, "backfill": backfill,
                 "tokens": result.tokens if result is not None else 0,
-                "reply": (result.reply if result is not None else None)
-                         if row["notification"] != "silent" else None})
+                "reply": reply if notification != "silent" else None})
+            if notification != "silent" and reply and target_session:
+                delivered = await gateway.notify_session(
+                    target_session, job_notify_text(str(row["id"]), outcome, reply))
+                if delivered:
+                    print(f"[jobs] 结果已推送 {target_session}", flush=True)
         await gateway.submit(session_key, runner)
 
     scheduler = JobScheduler(
@@ -324,7 +347,7 @@ async def amain(home: str) -> int:
     await stop.wait()
 
     for t in (curator_task, gepa_task, health_task, constitution_task,
-              scheduler_task):
+              scheduler_task, sessions_task):
         t.cancel()
     first_channel.stop()
     for ch in gateway.wechat_channels.values():
