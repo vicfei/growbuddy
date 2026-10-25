@@ -1,10 +1,12 @@
-# Naga
+# GrowBuddy
 
-[![CI](https://github.com/vicfei/naga/actions/workflows/ci.yml/badge.svg)](https://github.com/vicfei/naga/actions/workflows/ci.yml)
+> Formerly **Naga** (the Samsara design's Python route) — same project, plainer name.
+
+[![CI](https://github.com/vicfei/growbuddy/actions/workflows/ci.yml/badge.svg)](https://github.com/vicfei/growbuddy/actions/workflows/ci.yml)
 
 **A self-evolving AI agent runtime with a reversible, crash-recoverable core.**
 
-Naga is a personal AI agent that answers on your chat channels, turns experience
+GrowBuddy is a personal AI agent that answers on your chat channels, turns experience
 into reusable skills, and treats *every* change it makes to itself as an
 auditable, revertible ledger entry — so autonomy never costs you control.
 
@@ -12,7 +14,7 @@ auditable, revertible ledger entry — so autonomy never costs you control.
 
 ## Why it is different
 
-Most agent frameworks optimize for the demo. Naga optimizes for the other
+Most agent frameworks optimize for the demo. GrowBuddy optimizes for the other
 11 months: what happens when the agent modifies its own state, a plugin
 crashes at 3 a.m., a tool misbehaves, or you simply want yesterday back.
 The architecture is built around that, from the kernel up:
@@ -106,8 +108,8 @@ The authoritative design baseline lives in [`docs/design/`](docs/design/)
 Requires Python 3.12+.
 
 ```bash
-git clone https://github.com/vicfei/naga.git
-cd naga
+git clone https://github.com/vicfei/growbuddy.git
+cd growbuddy
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 .venv/bin/pytest -q                    # full suite (unit + PBT + fuzz + channels)
