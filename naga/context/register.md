@@ -425,3 +425,15 @@
 - 纪律:每批次收尾顺手 `bash /home/ubuntu/design-docs/sync.sh` 同步快照(快照允许滞后)。
 - 入库前双轮密钥扫描干净(sk-/ghp_/PRIVATE KEY 模式;实际凭据本就在各项目 gitignored credentials/ 下)。
 - 过程自抓:bash 参数展开 `##*/` 误代 `##*:` 令 rsync 把 "Naga:naga" 当 ssh 主机——首轮推送只有 README/sync.sh,清残留重做后六项目齐(sync.sh 同款 bug 一并修正);sed 未命中的教训再次验证"替换必须 assert"。
+
+## 2026-10-22 design-docs 更名 brainvault(用户命名决策)
+
+- 用户反馈 design-docs 太平淡,参照 workbuddy 风格(常见词复合、形象好记)改名 → **brainvault**(各项目的"脑"与图纸锁进私有保险库;与 private/不得外传定位呼应)。仓库已 rename(vicfei/brainvault,PRIVATE),本地路径 /home/ubuntu/brainvault,README 与远端描述已同步,sync.sh 幂等验证通过。
+- 纪律同步:批次收尾同步命令改为 `bash /home/ubuntu/brainvault/sync.sh`。
+
+## 2026-10-22 仓库更名 Naga → GrowBuddy(用户命名决策)
+
+- 用户:"Naga 太生僻,参照 workbuddy 起个简洁形象朗朗上口的名字"→ 定名 **GrowBuddy**(grow+buddy,会成长的伙伴——技能沉淀/记忆巩固/自我进化的产品灵魂)。
+- 已执行(仓库/品牌层):gh repo rename → `vicfei/growbuddy`(旧 URL 301 重定向,徽章 200);本地 remote 已换;About 描述加 "(formerly Naga)";双语 README 品牌位换 GrowBuddy+原名注记,badge/clone URL 更新(cd growbuddy)。直推(facade 先例),三门绿+339 passed。
+- **刻意不动**(留给代码改名批,soak 后):Python 包 `src/naga/`、CLI 命令 `naga`、home `~/.naga`、数据格式串 `naga-branch/0`/`naga-workflow/0`/`naga-constitution/0`(存量账本/manifest 里已固化的 schema id,**永续兼容不迁移**)。README 中这些路径保持真实。
+- 后续批次形态(soak 后):包更名 growbuddy+import 全改+CLI 主命令换 growbuddy(保留 naga 别名兼容)+~/.growbuddy home 迁移读旧兼新;设计文档与 Samsara 谱系叙述不变。
