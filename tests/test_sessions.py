@@ -9,6 +9,7 @@ note_activity 的 job 会话排除与重开语义/CLI。
 import asyncio
 import datetime
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from naga.gateway import Gateway
@@ -229,6 +230,7 @@ class FakeWeChatChannel:
     async def send_reply(self, peer: str, text: str,
                          _token: str | None) -> Any:
         self.sent.append((peer, text))
+        return SimpleNamespace(errcode=0, errmsg="")  # #93:errcode 真检
 
 
 def test_notify_session_routes_to_bound_channel(tmp_path):
