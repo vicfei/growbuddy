@@ -652,10 +652,19 @@ class Gateway:
         if ch is None or not getattr(ch, "is_running", False):
             return False
         try:
-            await ch.send_reply(peer, text, None)
-            return True
-        except Exception:  # noqa: BLE001 —— 通知尽力而为
+            result = await ch.send_reply(peer, text, None)
+        except Exception as err:  # noqa: BLE001 —— 通知尽力而为
+            print(f"[notify] 推送异常 {session_key}: {type(err).__name__}: {err}",
+                  flush=True)
             return False
+        # #93:iLink context_token 有时效,过期拒发 errcode=-2("prepare failed")
+        # ——无异常≠送达,errcode 必须真检(此前三天凌晨推送全部假阳性)
+        errcode = getattr(result, "errcode", None)
+        if result is None or errcode != 0:
+            print(f"[notify] 推送被拒 {session_key}: errcode={errcode} "
+                  f"errmsg={getattr(result, 'errmsg', '')}", flush=True)
+            return False
+        return True
 
     def _routing_bookkeeping(self, goal: str, session_key: str,
                              spec: Any, result: Any) -> None:

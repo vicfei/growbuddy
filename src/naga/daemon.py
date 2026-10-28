@@ -133,6 +133,16 @@ async def amain(home: str) -> int:
 
         async def runner(goal: str, session_key: str,
                          actor: dict[str, str], _ctx: dict[str, str]) -> None:
+            # #93:用户来消息了(token 新鲜)——先补发积压通知再执行任务
+            backlog = _take_pending(pending_file, session_key)
+            if backlog:
+                for item in backlog:
+                    text = str(item.get("text") or "")
+                    if not await gateway.notify_session(session_key, text):
+                        _enqueue(pending_file, session_key, text)
+                        break  # 仍被拒:保留余量,下次再试
+                print(f"[notify] 补发 {len(backlog)} 条积压 → {session_key}",
+                      flush=True)
             trace_id = "tr_" + uuid.uuid4().hex[:24]
             result = await gateway.run_agent(session_key=session_key, goal=goal,
                                              budget=OWNER_TASK_BASE_BUDGET,
@@ -185,6 +195,11 @@ async def amain(home: str) -> int:
     # ── 附录 C:定时任务调度器(fire 经 lane;wallMs 兜底;C.3 触发链路) ──
     from naga.jobs import JobScheduler, parse_budget
 
+    # ── #93 补发队列(naga.notify):推送被拒→持久化,下次来消息先行补发 ──
+    from naga.notify import enqueue as _enqueue
+    from naga.notify import take as _take_pending
+    pending_file = os.path.join(home, "state", "pending-notifies.json")
+
     def _creator_session(job_id: str) -> str | None:
         events = scan_job_events(led)
         raw_creator: object = events.get(job_id, {}).get("creator")
@@ -221,10 +236,14 @@ async def amain(home: str) -> int:
                 "tokens": result.tokens if result is not None else 0,
                 "reply": reply if notification != "silent" else None})
             if notification != "silent" and reply and target_session:
-                delivered = await gateway.notify_session(
-                    target_session, job_notify_text(str(row["id"]), outcome, reply))
+                text = job_notify_text(str(row["id"]), outcome, reply)
+                delivered = await gateway.notify_session(target_session, text)
                 if delivered:
                     print(f"[jobs] 结果已推送 {target_session}", flush=True)
+                else:
+                    _enqueue(pending_file, target_session, text)  # 窗口外,待补发
+                    print(f"[jobs] 推送被拒,已入补发队列 {target_session}",
+                          flush=True)
         await gateway.submit(session_key, runner)
 
     scheduler = JobScheduler(
@@ -265,12 +284,11 @@ async def amain(home: str) -> int:
         import time as _time
         last_task_ts["t"] = _time.monotonic()
         try:
-            candidates = await asyncio.to_thread(
-                auto_trigger_candidates, led, session_key)
+            # #93:sqlite 连接非线程安全,小查询内联执行(与其余账本调用一致)
+            candidates = auto_trigger_candidates(led, session_key)
             for name, uses in candidates:
                 print(f"[promotion] 自动触发: {name}(uses={uses})", flush=True)
-                goals = await asyncio.to_thread(
-                    goals_from_bundles, led, session_key=session_key)
+                goals = goals_from_bundles(led, session_key=session_key)
                 await promotion_pipeline.promote(name, from_session=session_key,
                                                  goals=goals)
         except Exception as err:  # noqa: BLE001 —— 后台晋升不阻塞渠道任务
