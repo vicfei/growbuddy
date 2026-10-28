@@ -968,3 +968,11 @@
 - 架构笔记：compose 的 sandbox 服务是 profile=full 占位（跑 true 只为拉镜像），真后端=app 按 session 用该镜像建容器（空闲 TTL 清扫即 #3942/#3980 所修子系统）；后端配置全部在「设置→沙箱后端」（TenantSandboxConfig：cube/e2b/docker 三型+网络策略+EnvVars 加密+卷挂载）
 - **Cube 后端待用户凭据四件套**：api_url（控制面）、api_key（按集群）、template_id、sandbox_domain（数据面，自托管另有 proxy_url）；就绪后一键 sandbox-check（deep 会真建远端沙箱）→ POST /sandbox-configs
 - 测试账号备注：opencode-manual@test.local / SseTest#2026（本地栈）
+
+## 2026-10-26 R35 — 会话续接：第 20 轮巡检，七牌穿越 10-26 早波零叫号；节点磁盘 94% 预警
+- **上游今日（10-26 UTC 04:24–05:35）一波 15 件合并**，main 头 236d79614（05:35）——lyingbug #4729（共享沙箱跨技能保留）+ ydflow 六连（agent 压缩/沙箱 stderr 预览/#4675 deep-check 进度保持）+ 社区多件（sqlite 组织支持/rerank 分数刻度/docreader PDF 边界）；**我方 7 PR 全 open 零触碰，双端点（reviews+comments since 10-20）全零**，updated_at 停在各自最后动作日
+- 战役件：#3501 仍只有我方 10-12 评论，维护者零回应；#3522 悬置如故（09-23 后无动）
+- **#3062 排队第 29 天**（09-27 开），明日 10-27 满 30 天=礼貌 ping 决策日（Greenplumwine 26 天先例已过）
+- 节点健康：内存正常（used 1.7G/3.6G）、WeKnora 五容器 v0.8.3 健康；**磁盘 94%（7.6G 空闲）预警**——Docker 镜像 52.75G 其中 34.16G 可回收（未被运行/停止容器引用）为最大杠杆，`docker image prune -a` 可释 34G；共节点多项目（deer-flow 等），清理留用户拍板未执行；/tmp 无我方遗留；他人项目大户不动（octop-memory-scan 5.4G、~/go 3.8G、weknora-images 3.0G）
+- 等待输入不变：WSL2 Cube 四件套；DeepSeek Search provider 等用户点头
+- **【R35 勘误 10-28】**GitHub 权威核验：①#3062 创建日实为 09-07（登记册误记 09-27，该日是对齐 main 的刷新日）→ 排队已 51 天，30 天 ping 决策已过点，下次巡检时升级处理；②在途实为 **8 PR** 非 7——#4069（10-08，中文向 provider 连通性测试修复）在册外遗漏；#4204 author=vicfei 实锚（gh pr list 偶发漏列，以 API 直查为准）；③合并 13 件全清单已 GitHub 实锚（3036/3069/3096/3104/3273/3336/3339/3367/3493/3638/3804/3943/3980，跨度 09-07→10-07）+ issue 17 件——为用户试用期汇报材料提供的数字基座

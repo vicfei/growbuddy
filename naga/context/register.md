@@ -437,3 +437,12 @@
 - 已执行(仓库/品牌层):gh repo rename → `vicfei/growbuddy`(旧 URL 301 重定向,徽章 200);本地 remote 已换;About 描述加 "(formerly Naga)";双语 README 品牌位换 GrowBuddy+原名注记,badge/clone URL 更新(cd growbuddy)。直推(facade 先例),三门绿+339 passed。
 - **刻意不动**(留给代码改名批,soak 后):Python 包 `src/naga/`、CLI 命令 `naga`、home `~/.naga`、数据格式串 `naga-branch/0`/`naga-workflow/0`/`naga-constitution/0`(存量账本/manifest 里已固化的 schema id,**永续兼容不迁移**)。README 中这些路径保持真实。
 - 后续批次形态(soak 后):包更名 growbuddy+import 全改+CLI 主命令换 growbuddy(保留 naga 别名兼容)+~/.growbuddy home 迁移读旧兼新;设计文档与 Samsara 谱系叙述不变。
+
+## 2026-10-28 生产事故 #93(PR #94,已合并):定时推送三日未达——iLink 推送窗口假阳性
+
+- **事故**:每日 07:00 科技摘要任务(job_669060e9,10-25 深夜建)连续三晨真实触发(job.fire 10-26/27/28 入账),用户微信零送达;daemon.log 每晨打"结果已推送"。用户三日后来报,事故暴露。
+- **根因(当场复现取证)**:①平台约束——iLink sendmessage 的 context_token 有时效,数天前的持久化 token 主动推送被拒(errcode=-2 "prepare failed");主动推送只在用户最近活跃窗口内有效(客服窗口语义)。M2 借用文档"持久态兜底保主动推送"假设被证伪,已补记。②代码缺陷——notify_session 只捕获异常不检 SendResult.errcode,拒发被记成功(三天假阳性)。
+- **修复(PR #94)**:notify errcode 真检(拒发真实记日志);naga/notify.py 补发队列(每会话 0600 持久化封顶 5)——推送被拒入队,用户下次来消息(token 新鲜)时 runner 先补发再执行任务;顺修日志暴露的 promotion 钩子跨线程 sqlite bug(asyncio.to_thread 用主线程连接,自会话注册表部署起每任务报 ProgrammingError,改内联)。5 测试新增(含旧 session fake 返回 errcode 语义化)。344 passed+1 skipped,冻结 20/20。
+- **善后**:三晨执行复盘——10-26 预算耗尽 aborted(60k 对三搜索+推理+蒸馏太紧)、10-27 成功(350 字摘要已从 replay bundle 提取入补发队列,用户下条微信消息即达)、10-28 无 trace(疑 wallMs 超时取消,随访);任务已按 150k 预算重建(job_d0edd0345)。
+- **"smart 通知"的诚实形态**(平台窗口下的定论):到点生成 + 活跃期即推 + 窗口外下次开口必达。推广文案中"到点推回微信"表述需按此校准(已知会跟进)。
+- **流程教训**:①"发送成功"类日志必须检协议错误码,无异常≠送达(三日假阳性的直接教训);②监控盲区——任务三天无送达无人知晓,soak 心跳只查渠道存活不查"预期推送未达";随访项:job 完成通知含投递结果(送达/入队/失败)三态入账,补发积压超阈值告警。部署 daemon pid 2852655;soak 12.55/30 天 P0=0。
