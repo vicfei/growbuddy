@@ -472,3 +472,9 @@
 - 用户定名 **PersonalAgent**,且明确"无关注者、不留 formerly 链"——公开面干净换代。repo → `vicfei/personal-agent`(URL 用连字符惯例;展示名 PersonalAgent);旧地址 301,徽章 200;README 双语零残留(GrowBuddy ×0),描述行改为 "PersonalAgent — your personal AI agent: self-evolving, fully auditable (hash-chained ledger + constitution), live on WeChat."。三门绿直推(facade 先例)。
 - 代码层仍 naga(包/CLI/home/数据格式串),代码改名批的目标名随本次决策更新(候选:包 personalagent、CLI `pa` 或 `pagent`——该批开时定);推广文案(小红书/知乎 GrowBuddy 版)作废,需要时按新名重出。
 - 内部记录链(仅登记册/brainvault,不公开):Naga → GrowBuddy(10-22)→ PersonalAgent(10-31)。
+
+## 2026-10-31 K.3 设计稿完成(RFC 待签核)+ 队列重排
+
+- 用户定夺:改名批撤销(可能再改名);K.3/embedding 召回/随访批可开工。调度器插件化降级"按需"(账本重放恢复已兑现其大半价值,C.1 完全体形式无近期消费者——诚实降序记录)。
+- **K.3 设计稿落盘 docs/research/k3-privileged-ipc-design.md**(直推,研究文档):进程边界(authority 独占信任派生/授予、预算、R 闸、记忆写闸、任务闸、宪法校验;账本留宿主为 D1 裁决)/Unix socket JSON 行协议(八消息面)/宿主派生+systemd v2 升级路径/fail-closed 矩阵/宪法增补 C6a/C6b/C7+C2C3 锚点迁移一次重锚(兑现 E''"写闸入宪并入 K.3")/测试策略/NAGA_AUTHORITY_MODE 回退开关。**五个签核裁决点(A 父进程/B fail-closed 严格度/C 宪法增补/D1 账本边界/D2 回退开关)呈用户,全部附建议"如稿"。**
+- 下一步:待签核→K.3 实现批;平行可做:记忆 embedding 召回批(dashscope 已批)、随访合批(system_status 带 goal/notify 三态入账/naga usage)。
