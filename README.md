@@ -124,6 +124,24 @@ naga daemon start      # http://127.0.0.1:18789 — WebChat console
 naga doctor            # self-check
 ```
 
+## Try it
+
+Once the daemon is up:
+
+1. **WebChat** — open <http://127.0.0.1:18789> and chat directly (loopback
+   connection = owner trust).
+2. **WeChat** — click **📱 绑定微信** on the same page, scan the QR code with
+   WeChat, and the bot appears in your contact list — text, voice (auto-
+   transcribed) and images work end-to-end. Binding is hot: no restart needed.
+
+**Multiple people?** Yes — each person scans their own QR code and gets an
+**independent bot identity** (the platform provisions one per binding), with
+session, memory and trust isolated per user. Two concurrent real users have
+been verified in production. Note the current posture is *personal /
+small-circle deployment*: a fresh QR binding is granted **owner** trust on
+your instance, and the WebChat console is loopback-only by design — see
+`docs/design/` for the trust model before opening an instance to strangers.
+
 ## Repository layout
 
 ```
