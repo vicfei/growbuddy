@@ -145,6 +145,16 @@ kernel 种子条目(effect.register/apply_begin/apply_ok、fiber.*、event.emit 
   ④job:* 会话不入注册表;⑤会话级常驻分支未做(每任务分支维持,
   收尾整合蒸馏覆盖记忆角度;常驻形态的崩溃/物化时机设计另批)。
 
+## E'''' 追加(自省挂载,2026-10-31,issue #95)——待批
+
+- **候选 additive kind**:notify.delivered/refused(推送三态目前持久化
+  于 state/notify-log.json 状态文件,非账本——入账则可重建,候选记档)。
+- **候选 spec-constants**:notify_pending_max=5(已在 naga/notify 落值)。
+- **偏差记录**:①system_status 对 guest 可见(R0)但内容按 §10 矩阵过滤
+  ops 细节(工具可见性与内容可见性两级);②job_create 工具默认预算/墙钟
+  取 job_default_* 常量,不经 WS 面的参数覆盖;③元事实注入为静态两行
+  (L3 元对象清单的最小形态,动态清单待元对象资产化)。
+
 ## E. 建议处置
 
 1. 本 RFC 并入 #23 批设计评审:A 节 4 条 kind 按 additive 入 §3.1 枚举;B 节 7 条入

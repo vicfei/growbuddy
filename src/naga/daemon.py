@@ -138,7 +138,7 @@ async def amain(home: str) -> int:
             if backlog:
                 for item in backlog:
                     text = str(item.get("text") or "")
-                    if not await gateway.notify_session(session_key, text):
+                    if not await deliver(session_key, text):
                         _enqueue(pending_file, session_key, text)
                         break  # 仍被拒:保留余量,下次再试
                 print(f"[notify] 补发 {len(backlog)} 条积压 → {session_key}",
@@ -198,7 +198,16 @@ async def amain(home: str) -> int:
     # ── #93 补发队列(naga.notify):推送被拒→持久化,下次来消息先行补发 ──
     from naga.notify import enqueue as _enqueue
     from naga.notify import take as _take_pending
+    from naga.system_tools import record_delivery
     pending_file = os.path.join(home, "state", "pending-notifies.json")
+    delivery_log = os.path.join(home, "state", "notify-log.json")
+
+    async def deliver(target: str, text: str) -> bool:
+        """推送+三态留痕(送达/被拒入队),投递日志供 system_status 读。"""
+        ok = await gateway.notify_session(target, text)
+        record_delivery(delivery_log, target, text,
+                        "delivered" if ok else "queued")
+        return ok
 
     def _creator_session(job_id: str) -> str | None:
         events = scan_job_events(led)
@@ -237,7 +246,7 @@ async def amain(home: str) -> int:
                 "reply": reply if notification != "silent" else None})
             if notification != "silent" and reply and target_session:
                 text = job_notify_text(str(row["id"]), outcome, reply)
-                delivered = await gateway.notify_session(target_session, text)
+                delivered = await deliver(target_session, text)
                 if delivered:
                     print(f"[jobs] 结果已推送 {target_session}", flush=True)
                 else:

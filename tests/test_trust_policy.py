@@ -150,9 +150,12 @@ def test_run_agent_guest_tool_filter_reaches_loop(tmp_path):
                            trace_id="tr_t2", actor_trust="owner")
 
     asyncio.run(scenario())
-    assert seen[0] == ["web_search"]   # guest:写类工具不可见
+    # #95 自省挂载后 guest 增见 R0 只读的 system_status(内容按 §10 过滤)
+    assert seen[0] == ["web_search", "system_status"]  # guest:写类工具不可见
     # owner 自 M3-1 起额外可见派生工具(授权代数单点装配)
-    assert seen[1] == ["web_search", "send_mail", "spawn_subagents"]
+    assert seen[1] == ["web_search", "send_mail", "spawn_subagents",
+                       "system_status", "job_create", "job_pause",
+                       "job_delete"]
     led.close()
 
 

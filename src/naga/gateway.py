@@ -597,6 +597,14 @@ class Gateway:
             budget=kernel.Budget(budget), depth=0, parent_trace=trace_id,
             branch=branch)
         tools: list[Any] = spawner.make_tools()
+        if self._home is not None:  # #95 自省挂载:本会话绑定的运行时工具
+            # 信任门控不可绕过:会话工具同样过 §10.1 档位过滤(装配路径
+            # 上的门,不只函数里有门——测试抓过 guest 漏见 R1 工具的洞)
+            from naga.system_tools import session_system_tools
+            session_tools = session_system_tools(self._ledger, self._home,
+                                                 session_key, actor_trust,
+                                                 make_adapter)
+            tools += tools_for_trust(actor_trust, session_tools)
         if r_ceiling is not None:  # 任务级风险帽罩住全部装配产物(含 spawn)
             tools = [t for t in tools if tool_risk(t) <= r_ceiling]
         loop = AgentLoop(ledger=self._ledger, ctx=kern.root,
