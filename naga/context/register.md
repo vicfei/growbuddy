@@ -466,3 +466,9 @@
 - **真实验证(daemon 在产,真实 deepseek)**:问"你有哪些定时任务?最近一次推送结果?"→ agent 先调 system_status,如实报出 job_d0edd034/0 7 * * */最近触发时间戳,并对空投递记录诚实输出"无记录,不能断言送达"——与 #93 事故时"我没有定时器"的盲目否认形成完整对照,自省闭环。
 - agent 反馈的改进点(随访):system_status 任务条目未带 goal 文本(它自己提出"无法说出具体推送什么");notify-log 部署后才起记,历史三态不可溯(候选 additive kind notify.delivered/refused 入账可解,已记 E'''')。
 - 下一步(用户解除窗口后队列):调度器插件化(effect 通道注册/卸载即取消,C.1 完全体)→ K.3 IPC → 代码层改名(growbuddy 包/CLI/home)。E'''' 新增:notify 状态 kind 候选+notify_pending_max+三条偏差。
+
+## 2026-10-31 二次更名 GrowBuddy → PersonalAgent(用户命名决策,干净换代)
+
+- 用户定名 **PersonalAgent**,且明确"无关注者、不留 formerly 链"——公开面干净换代。repo → `vicfei/personal-agent`(URL 用连字符惯例;展示名 PersonalAgent);旧地址 301,徽章 200;README 双语零残留(GrowBuddy ×0),描述行改为 "PersonalAgent — your personal AI agent: self-evolving, fully auditable (hash-chained ledger + constitution), live on WeChat."。三门绿直推(facade 先例)。
+- 代码层仍 naga(包/CLI/home/数据格式串),代码改名批的目标名随本次决策更新(候选:包 personalagent、CLI `pa` 或 `pagent`——该批开时定);推广文案(小红书/知乎 GrowBuddy 版)作废,需要时按新名重出。
+- 内部记录链(仅登记册/brainvault,不公开):Naga → GrowBuddy(10-22)→ PersonalAgent(10-31)。
