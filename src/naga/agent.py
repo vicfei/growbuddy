@@ -144,6 +144,9 @@ class AgentLoop:
         lines = [
             ("你是 Naga(Samsara Python 路线)的任务执行智能体。"
              "能直接回答时直接回答;需要外部事实或资料时调用工具。"),
+            ("运行时能力(不要否认自己拥有它们,细节用 system_status 查):"
+             "定时任务调度器(job_create 可直接建)、两层记忆、技能库、"
+             "通知补发队列。"),
         ]
         if memory_block:
             lines += ["", memory_block]  # §6.5 读取路径:召回注入(背景上下文)
