@@ -984,3 +984,11 @@
 - **在途维护警报**：合并波后 #4182/#4069/#3566/#3251/#3283 全部 **dirty**（与 main 冲突），仅 #3457/#3062 clean——rebase 刷新为最高优先常规动作（#3566 被 lyingbug 点名"正解"尤需保鲜）
 - 新池：10-26 以来 14+ 新 issue，bug 型全部 1 日内被配对（#4908/#4921/#4907/#4909/#4917/#4918）；未配对者全为大型 feature（#4887 解析队列跨空间公平调度／#4892 整库重建／#4878 批量共享授权／#4914 Confluence 附件摄取）——均非同日牌；#4887 与我方摄取管线专域重合但需设计讨论先行，仅记录
 - 其他：#3062 排队第 53 天（ping 决策过点待用户）；#3501 维护者零回应、#3522 悬置如故；本地栈 v0.8.3→v0.9.0 升级是自有发现矿脉（待排）；#4791（client 不完整 SSE 帧上报，ydflow）合并——SSE 健壮性仍是维护者活跃兴趣区，佐证契约文档牌价值
+
+## 2026-10-30 R37 — 本地栈升级 v0.9.0 完成：迁移 118→134、Docker 沙箱复验全绿、knowledge-chat 引用通道正常
+- 流程：pg_dump 备份（467K，~/weknora-backup-20261030-2317.sql）→ .env v0.8.3→v0.9.0 → 四镜像拉取（app 2.45G/ui 124M/docreader 5.98G/sandbox 728M）→ up -d 重建
+- 结果：五容器 healthy；**迁移 118→134（16 步）dirty=false**；数据完好（1 KB/账号俱在）；磁盘 89%（15G 空闲，拉取耗 7G）；v0.8.3 四镜像保留作回滚（后续可释约 8.9G）
+- **Docker 沙箱后端 v0.9.0 复验五项全绿**：TenantSandboxConfig image 已 PUT 更新 v0.9.0；deep 校验正确姿势 `{"config_id":...,"deep":true}`（**deep 是布尔，不是 mode 字段**）；真实建容器探针 41ms/出站 197ms（cn:baidu）
+- **v0.9.0 API 行为变化三点实测入册**：①knowledge-chat 需先建会话（裸 session_id 报 1003 Session not found）；②/system/sandbox-check 走 RBAC g.Admin()（租户 Admin+），非授权 token 报"invalid or expired token"（文案误导，实为权限拒绝）；③登录响应 JWT 在顶层 `token` 字段（非 access_token）
+- 测试账号 opencode-manual 已提 is_system_admin=true（DB 直改，R28 惯例；便于 v0.9.0 管理面探索；租户角色保持 owner——一度误降 admin 已复位）
+- knowledge-chat 冒烟：298 SSE 事件/检索命中 1/references 事件带 knowledge_references/complete 带 final_content——**引用通道在 v0.9.0 照常工作**（SSE 契约战役 knowledge-chat 侧证据新增 v0.9.0 版本锚；agent-chat 侧未测）
