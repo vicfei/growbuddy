@@ -1,12 +1,10 @@
-# GrowBuddy
+# PersonalAgent
 
-> 原名 Naga(Samsara 设计的 Python 路线)——同一个项目,更直白的名字。
-
-[![CI](https://github.com/vicfei/growbuddy/actions/workflows/ci.yml/badge.svg)](https://github.com/vicfei/growbuddy/actions/workflows/ci.yml)
+[![CI](https://github.com/vicfei/personal-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/vicfei/personal-agent/actions/workflows/ci.yml)
 
 **可安全自我修改、经验可复利的自进化智能体运行时。**
 
-GrowBuddy 是一个个人 AI 智能体:在你的聊天渠道上应答,把经验沉淀为可复用的技能,
+PersonalAgent 是你的私人 AI 智能体:在你的聊天渠道上应答,把经验沉淀为可复用的技能,
 并且把它对自身做出的**每一次**修改都记为可审计、可回滚的账本条目——
 让自主性不以失控为代价。
 
@@ -14,7 +12,7 @@ GrowBuddy 是一个个人 AI 智能体:在你的聊天渠道上应答,把经验�
 
 ## 有什么不一样
 
-大多数智能体框架为演示效果优化。GrowBuddy 为之后的十一个月优化:当智能体修改了
+大多数智能体框架为演示效果优化。PersonalAgent 为之后的十一个月优化:当智能体修改了
 自身状态、插件在凌晨三点崩溃、工具行为异常、或者你只是想要回昨天的系统时,
 会发生什么?架构从内核层开始就围绕这些问题构建:
 
@@ -94,8 +92,8 @@ GrowBuddy 是一个个人 AI 智能体:在你的聊天渠道上应答,把经验�
 需要 Python 3.12+。
 
 ```bash
-git clone https://github.com/vicfei/growbuddy.git
-cd growbuddy
+git clone https://github.com/vicfei/personal-agent.git
+cd personal-agent
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 .venv/bin/pytest -q                    # 全量测试(单元 + PBT + 模糊 + 渠道)
